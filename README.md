@@ -2,6 +2,8 @@
 
 ProjectLens is a **.NET 8 AI agent** that analyzes your local codebase using **tool-based orchestration** and **LLM-driven reasoning**.
 
+ProjectLens lets you ask questions about your codebase—and answers them by actually reading your code.
+
 Instead of hardcoded workflows, ProjectLens exposes capabilities through tools and lets the model decide:
 
 - what to inspect
@@ -49,6 +51,14 @@ Back to Model
    |
    v
 Final Answer
+
+Example:
+Prompt: "Summarize this project"
+
+Output:
+- .NET 8 clean architecture project
+- Uses tool-based agent orchestration
+- Contains filesystem tools and OpenAI integration
 ```
 
 ---
@@ -98,6 +108,17 @@ Final Answer
 - Rule-based fallback with no AI required
 - Testable components
 
+---
+
+## Why ProjectLens?
+
+Traditional scripts:
+- follow fixed steps
+
+ProjectLens:
+- dynamically decides what to inspect
+- reasons over real data
+- adapts to different repositories
 ---
 
 ## Getting Started
