@@ -199,7 +199,7 @@ If `ApiKey` or `Model` is not configured, ProjectLens automatically switches to 
 ## Author
 
 **Hrushikesh Pande**  
-Senior Consultant | Architect-in-progress | AI Explorer
+Senior Consultant | AI Explorer
 
 ---
 
