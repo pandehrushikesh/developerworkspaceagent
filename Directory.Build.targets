@@ -1,0 +1,34 @@
+<Project>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net8.0'">
+    <KnownFrameworkReference Remove="Microsoft.NETCore.App" />
+    <KnownFrameworkReference Remove="Microsoft.AspNetCore.App" />
+    <KnownFrameworkReference Remove="Microsoft.WindowsDesktop.App" />
+
+    <KnownFrameworkReference Include="Microsoft.NETCore.App"
+                             TargetFramework="net8.0"
+                             RuntimeFrameworkName="Microsoft.NETCore.App"
+                             DefaultRuntimeFrameworkVersion="8.0.0"
+                             LatestRuntimeFrameworkVersion="8.0.20"
+                             TargetingPackName="Microsoft.NETCore.App.Ref"
+                             TargetingPackVersion="8.0.20"
+                             RuntimePackNamePatterns="Microsoft.NETCore.App.Runtime.**RID**"
+                             RuntimePackRuntimeIdentifiers="win-arm64;win-x64;win-x86" />
+    <KnownFrameworkReference Include="Microsoft.AspNetCore.App"
+                             TargetFramework="net8.0"
+                             RuntimeFrameworkName="Microsoft.AspNetCore.App"
+                             DefaultRuntimeFrameworkVersion="8.0.0"
+                             LatestRuntimeFrameworkVersion="8.0.20"
+                             TargetingPackName="Microsoft.AspNetCore.App.Ref"
+                             TargetingPackVersion="8.0.20" />
+    <KnownFrameworkReference Include="Microsoft.WindowsDesktop.App"
+                             TargetFramework="net8.0"
+                             RuntimeFrameworkName="Microsoft.WindowsDesktop.App"
+                             DefaultRuntimeFrameworkVersion="8.0.0"
+                             LatestRuntimeFrameworkVersion="8.0.20"
+                             TargetingPackName="Microsoft.WindowsDesktop.App.Ref"
+                             TargetingPackVersion="8.0.20"
+                             RuntimePackNamePatterns="Microsoft.WindowsDesktop.App.Runtime.**RID**"
+                             RuntimePackRuntimeIdentifiers="win-arm64;win-x64;win-x86"
+                             IsWindowsOnly="true" />
+  </ItemGroup>
+</Project>

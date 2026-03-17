@@ -1,0 +1,12 @@
+<Project>
+  <PropertyGroup>
+    <AspNetCoreTargetingPackVersion>8.0.20</AspNetCoreTargetingPackVersion>
+    <DisableTransitiveFrameworkReferenceDownloads>true</DisableTransitiveFrameworkReferenceDownloads>
+    <MicrosoftNETWindowsDesktopAppRefPackageVersion>8.0.20</MicrosoftNETWindowsDesktopAppRefPackageVersion>
+    <NetCoreTargetingPackVersion>8.0.20</NetCoreTargetingPackVersion>
+    <RestoreIgnoreFailedSources>true</RestoreIgnoreFailedSources>
+    <NuGetAudit>false</NuGetAudit>
+    <TargetLatestRuntimePatch>false</TargetLatestRuntimePatch>
+    <UseSharedCompilation>false</UseSharedCompilation>
+  </PropertyGroup>
+</Project>
