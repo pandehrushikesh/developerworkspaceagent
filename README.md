@@ -1,68 +1,218 @@
-# 🚀 ProjectLens – AI-Powered Developer Workspace Agent
+# ProjectLens - AI-Powered Developer Workspace Agent
 
 ProjectLens is a **.NET 8 AI agent** that analyzes your local codebase using **tool-based orchestration** and **LLM-driven reasoning**.
 
-Instead of hardcoded workflows, ProjectLens exposes capabilities (tools) and lets the model decide:
+Instead of hardcoded workflows, ProjectLens exposes capabilities through tools and lets the model decide:
+
 - what to inspect
 - which files to read
 - how to answer your query
 
 ---
 
-## 🧠 What Problem Does It Solve?
+## What Problem Does It Solve?
 
 Developers often ask:
+
 - "What does this repo do?"
 - "Where is this feature implemented?"
 - "Which files are important?"
 - "What changed recently?"
 
 ProjectLens answers these questions by:
+
 - exploring your workspace
 - reading relevant files
-- reasoning over actual data (not guessing)
+- reasoning over actual data instead of guessing
 
 ---
 
-## ⚙️ How It Works
+## How It Works
 
 ```text
 User Prompt
-   ↓
+   |
+   v
 Agent Orchestrator
-   ↓
+   |
+   v
 Model (LLM)
-   ↓
+   |
+   v
 Tool Calls (if needed)
-   ↓
+   |
+   v
 Filesystem Tools (list_files, read_file)
-   ↓
+   |
+   v
 Back to Model
-   ↓
+   |
+   v
 Final Answer
+```
+
+---
 
 ## Project Structure
 
-- `ProjectLens.Host`: console entry point and composition root for running the agent application.
-- `ProjectLens.Application`: application-layer coordination and use-case logic.
-- `ProjectLens.Domain`: core agent contracts and domain models, kept free of infrastructure concerns.
-- `ProjectLens.Infrastructure`: external system implementations and adapters.
-- `ProjectLens.Tests`: lightweight automated coverage for tools and orchestration flows.
+| Project | Responsibility |
+| --- | --- |
+| `ProjectLens.Host` | Console entry point and composition root |
+| `ProjectLens.Application` | Orchestration logic and abstractions |
+| `ProjectLens.Domain` | Core contracts for agents, tools, and models |
+| `ProjectLens.Infrastructure` | Tools and OpenAI integration |
+| `ProjectLens.Tests` | Test coverage |
 
-## Notes
+### Key Responsibilities
 
-- Dependency flow is `Host -> Application -> Domain` and `Host -> Infrastructure -> Application -> Domain`.
-- The `Domain` project contains the core agent request/response models plus tool and orchestrator interfaces.
-- `ProjectLens.Application` contains the agent orchestrator plus the `IModelClient` seam used for model-driven tool orchestration.
-- `ProjectLens.Infrastructure` contains filesystem tools and the OpenAI `IModelClient` implementation.
+#### Domain
+
+- Agent request/response models
+- `ITool`
+- `IAgentOrchestrator`
+
+#### Application
+
+- `AgentOrchestrator`
+- `IModelClient` abstraction for AI integration
+
+#### Infrastructure
+
+- Filesystem tools: `list_files`, `read_file`
+- OpenAI model client
+
+#### Host
+
+- App configuration
+- Dependency wiring
+- Entry point
+
+---
+
+## Features
+
+- Model-driven orchestration loop
+- Tool-based architecture that is easy to extend
+- Safe filesystem access bounded to the workspace
+- Clean architecture separation
+- Rule-based fallback with no AI required
+- Testable components
+
+---
+
+## Getting Started
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/pandehrushikesh/developerworkspaceagent.git
+cd developerworkspaceagent
+```
+
+### 2. Configure OpenAI (Optional but Recommended)
+
+Update `ProjectLens.Host/appsettings.json`:
+
+```json
+{
+  "OpenAI": {
+    "ApiKey": "YOUR_API_KEY",
+    "Model": "gpt-4.1-mini",
+    "BaseUrl": "https://api.openai.com/v1/",
+    "MaxIterations": 5
+  }
+}
+```
+
+### 3. Run the application
+
+```bash
+dotnet run --project ProjectLens.Host
+```
+
+---
+
+## Example Prompts
+
+Try asking:
+
+- "Summarize this project"
+- "Explain the architecture"
+- "Which files are important?"
+- "What does this repository do?"
+
+---
+
+## Available Tools
+
+| Tool | Description |
+| --- | --- |
+| `list_files` | Lists files and directories |
+| `read_file` | Reads text-based files safely |
+
+---
 
 ## Model Configuration
 
-Set model settings in [ProjectLens.Host/appsettings.json](C:/Users/admin/source/repos/developerworkspaceagent/ProjectLens.Host/appsettings.json):
+Configuration is controlled via `ProjectLens.Host/appsettings.json`.
 
-- `OpenAI:ApiKey`: required to enable model-driven orchestration.
-- `OpenAI:Model`: required model name.
-- `OpenAI:BaseUrl`: optional override for the API base URL.
-- `OpenAI:MaxIterations`: maximum model/tool loop iterations before the agent stops.
+| Setting | Description |
+| --- | --- |
+| `OpenAI:ApiKey` | Required for AI mode |
+| `OpenAI:Model` | Model name |
+| `OpenAI:BaseUrl` | Optional API endpoint override |
+| `OpenAI:MaxIterations` | Maximum reasoning loop iterations |
 
-If `ApiKey` or `Model` is not configured, ProjectLens automatically falls back to the existing rule-based repository summary flow.
+### Fallback Mode
+
+If `ApiKey` or `Model` is not configured, ProjectLens automatically switches to **rule-based analysis mode**.
+
+---
+
+## Design Principles
+
+- AI is not trusted blindly
+- All data access happens via tools
+- No direct filesystem or system access from the model
+- Deterministic and AI-hybrid approach
+
+---
+
+## Future Enhancements
+
+- `search_files` tool
+- Git history analysis
+- Code dependency mapping
+- Semantic code understanding
+- Web UI
+
+---
+
+## Core Idea
+
+> Tools define capability.  
+> AI provides reasoning.  
+> Orchestrator controls execution.
+
+---
+
+## Author
+
+**Hrushikesh Pande**  
+Senior Consultant | Architect-in-progress | AI Explorer
+
+---
+
+## Support
+
+If you find this useful:
+
+- Star the repo
+- Fork it
+- Share feedback
+
+---
+
+## Final Thought
+
+ProjectLens is not just a tool - it is a pattern for building intelligent, safe, and extensible AI agents.
