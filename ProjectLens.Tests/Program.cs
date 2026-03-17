@@ -18,6 +18,15 @@ internal static class Program
             ("ReadFileTool reads and truncates text", ToolTests.ReadFileToolReadsAndTruncatesTextAsync),
             ("ReadFileTool rejects files outside workspace", ToolTests.ReadFileToolRejectsFilesOutsideWorkspaceAsync),
             ("ReadFileTool rejects binary files", ToolTests.ReadFileToolRejectsBinaryFilesAsync),
+            ("SearchFilesTool requires a query", ToolTests.SearchFilesToolRequiresQueryAsync),
+            ("SearchFilesTool rejects invalid paths", ToolTests.SearchFilesToolRejectsInvalidPathAsync),
+            ("SearchFilesTool finds matches in a single file", ToolTests.SearchFilesToolFindsMatchesInSingleFileAsync),
+            ("SearchFilesTool finds matches recursively", ToolTests.SearchFilesToolFindsMatchesRecursivelyAsync),
+            ("SearchFilesTool honors file patterns", ToolTests.SearchFilesToolHonorsFilePatternAsync),
+            ("SearchFilesTool honors max results", ToolTests.SearchFilesToolHonorsMaxResultsAsync),
+            ("SearchFilesTool honors case sensitivity", ToolTests.SearchFilesToolHonorsCaseSensitivityAsync),
+            ("SearchFilesTool skips binary files", ToolTests.SearchFilesToolSkipsBinaryFilesAsync),
+            ("SearchFilesTool returns stable readable snippets", ToolTests.SearchFilesToolReturnsReadableSnippetsAsync),
             ("AgentOrchestrator summarizes README and project file", ToolTests.AgentOrchestratorSummarizesWorkspaceAsync),
             ("AgentOrchestrator handles missing optional files", ToolTests.AgentOrchestratorHandlesMissingWorkspaceFilesAsync),
             ("AgentOrchestrator requires registered tools", ToolTests.AgentOrchestratorRequiresRegisteredToolsAsync),
@@ -171,6 +180,229 @@ internal static class ToolTests
 
         TestAssert.False(result.Success, "The tool should reject binary files.");
         TestAssert.Contains("Only text-based files can be read.", result.ErrorMessage);
+    }
+
+    public static async Task SearchFilesToolRequiresQueryAsync()
+    {
+        using var workspace = new TestWorkspace();
+        var tool = new SearchFilesTool(workspace.RootPath);
+
+        var result = await tool.ExecuteAsync(new Dictionary<string, string>());
+
+        TestAssert.False(result.Success, "The tool should reject missing queries.");
+        TestAssert.Contains("The query argument is required.", result.ErrorMessage);
+    }
+
+    public static async Task SearchFilesToolRejectsInvalidPathAsync()
+    {
+        using var workspace = new TestWorkspace();
+        var tool = new SearchFilesTool(workspace.RootPath);
+
+        var result = await tool.ExecuteAsync(new Dictionary<string, string>
+        {
+            ["query"] = "ProjectLens",
+            ["path"] = "missing"
+        });
+
+        TestAssert.False(result.Success, "The tool should reject missing paths.");
+        TestAssert.Contains("The requested path does not exist.", result.ErrorMessage);
+    }
+
+    public static async Task SearchFilesToolFindsMatchesInSingleFileAsync()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.WriteText(
+            "README.md",
+            """
+            intro
+            ProjectLens helps inspect repositories.
+            closing
+            """);
+
+        var tool = new SearchFilesTool(workspace.RootPath);
+        var result = await tool.ExecuteAsync(new Dictionary<string, string>
+        {
+            ["query"] = "ProjectLens",
+            ["path"] = "README.md"
+        });
+
+        TestAssert.True(result.Success, "The tool should succeed.");
+        var response = Deserialize<SearchFilesResponse>(result.Output);
+
+        TestAssert.Equal("README.md", response.SearchRoot);
+        TestAssert.Equal(1, response.TotalMatches);
+        TestAssert.SequenceEqual(
+            new[]
+            {
+                new SearchFileMatch("README.md", 2, "ProjectLens helps inspect repositories.")
+            },
+            response.Matches.ToArray());
+    }
+
+    public static async Task SearchFilesToolFindsMatchesRecursivelyAsync()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.WriteText(Path.Combine("src", "alpha.txt"), "ProjectLens alpha");
+        workspace.WriteText(Path.Combine("src", "nested", "beta.txt"), "beta\nProjectLens nested");
+        workspace.WriteText(Path.Combine("src", "gamma.txt"), "no match");
+
+        var tool = new SearchFilesTool(workspace.RootPath);
+        var result = await tool.ExecuteAsync(new Dictionary<string, string>
+        {
+            ["query"] = "ProjectLens",
+            ["path"] = "src"
+        });
+
+        TestAssert.True(result.Success, "The tool should succeed.");
+        var response = Deserialize<SearchFilesResponse>(result.Output);
+
+        TestAssert.Equal("src", response.SearchRoot);
+        TestAssert.Equal(2, response.TotalMatches);
+        TestAssert.SequenceEqual(
+            new[]
+            {
+                new SearchFileMatch("src/alpha.txt", 1, "ProjectLens alpha"),
+                new SearchFileMatch("src/nested/beta.txt", 2, "ProjectLens nested")
+            },
+            response.Matches.ToArray());
+    }
+
+    public static async Task SearchFilesToolHonorsFilePatternAsync()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.WriteText("notes.txt", "ProjectLens text");
+        workspace.WriteText("notes.md", "ProjectLens markdown");
+
+        var tool = new SearchFilesTool(workspace.RootPath);
+        var result = await tool.ExecuteAsync(new Dictionary<string, string>
+        {
+            ["query"] = "ProjectLens",
+            ["filePattern"] = "*.md"
+        });
+
+        TestAssert.True(result.Success, "The tool should succeed.");
+        var response = Deserialize<SearchFilesResponse>(result.Output);
+
+        TestAssert.Equal(1, response.TotalMatches);
+        TestAssert.SequenceEqual(
+            new[]
+            {
+                new SearchFileMatch("notes.md", 1, "ProjectLens markdown")
+            },
+            response.Matches.ToArray());
+    }
+
+    public static async Task SearchFilesToolHonorsMaxResultsAsync()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.WriteText("a.txt", "ProjectLens one");
+        workspace.WriteText("b.txt", "ProjectLens two");
+        workspace.WriteText("c.txt", "ProjectLens three");
+
+        var tool = new SearchFilesTool(workspace.RootPath);
+        var result = await tool.ExecuteAsync(new Dictionary<string, string>
+        {
+            ["query"] = "ProjectLens",
+            ["maxResults"] = "2"
+        });
+
+        TestAssert.True(result.Success, "The tool should succeed.");
+        var response = Deserialize<SearchFilesResponse>(result.Output);
+
+        TestAssert.Equal(2, response.TotalMatches);
+        TestAssert.SequenceEqual(
+            new[]
+            {
+                new SearchFileMatch("a.txt", 1, "ProjectLens one"),
+                new SearchFileMatch("b.txt", 1, "ProjectLens two")
+            },
+            response.Matches.ToArray());
+    }
+
+    public static async Task SearchFilesToolHonorsCaseSensitivityAsync()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.WriteText(
+            "cases.txt",
+            """
+            projectlens lower
+            ProjectLens exact
+            """);
+
+        var tool = new SearchFilesTool(workspace.RootPath);
+
+        var insensitiveResult = await tool.ExecuteAsync(new Dictionary<string, string>
+        {
+            ["query"] = "projectlens"
+        });
+
+        var sensitiveResult = await tool.ExecuteAsync(new Dictionary<string, string>
+        {
+            ["query"] = "projectlens",
+            ["caseSensitive"] = "true"
+        });
+
+        TestAssert.True(insensitiveResult.Success, "Case-insensitive search should succeed.");
+        TestAssert.True(sensitiveResult.Success, "Case-sensitive search should succeed.");
+
+        var insensitiveResponse = Deserialize<SearchFilesResponse>(insensitiveResult.Output);
+        var sensitiveResponse = Deserialize<SearchFilesResponse>(sensitiveResult.Output);
+
+        TestAssert.Equal(2, insensitiveResponse.TotalMatches);
+        TestAssert.Equal(1, sensitiveResponse.TotalMatches);
+        TestAssert.SequenceEqual(
+            new[]
+            {
+                new SearchFileMatch("cases.txt", 1, "projectlens lower")
+            },
+            sensitiveResponse.Matches.ToArray());
+    }
+
+    public static async Task SearchFilesToolSkipsBinaryFilesAsync()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.WriteBinary("data.bin", new byte[] { 0, 1, 2, 3 });
+        workspace.WriteText("notes.txt", "ProjectLens text");
+
+        var tool = new SearchFilesTool(workspace.RootPath);
+        var result = await tool.ExecuteAsync(new Dictionary<string, string>
+        {
+            ["query"] = "ProjectLens"
+        });
+
+        TestAssert.True(result.Success, "The tool should succeed.");
+        var response = Deserialize<SearchFilesResponse>(result.Output);
+
+        TestAssert.Equal(1, response.TotalMatches);
+        TestAssert.SequenceEqual(
+            new[]
+            {
+                new SearchFileMatch("notes.txt", 1, "ProjectLens text")
+            },
+            response.Matches.ToArray());
+    }
+
+    public static async Task SearchFilesToolReturnsReadableSnippetsAsync()
+    {
+        using var workspace = new TestWorkspace();
+        var longLine = "prefix " + new string('x', 220) + " ProjectLens " + new string('y', 220);
+        workspace.WriteText("snippets.txt", $"   {longLine}   ");
+
+        var tool = new SearchFilesTool(workspace.RootPath);
+        var result = await tool.ExecuteAsync(new Dictionary<string, string>
+        {
+            ["query"] = "ProjectLens"
+        });
+
+        TestAssert.True(result.Success, "The tool should succeed.");
+        var response = Deserialize<SearchFilesResponse>(result.Output);
+        var match = response.Matches.Single();
+
+        TestAssert.Equal(1, response.TotalMatches);
+        TestAssert.True(match.Snippet.Length <= 160, "The snippet should be trimmed to a readable length.");
+        TestAssert.True(match.Snippet.EndsWith("...", StringComparison.Ordinal), "Long snippets should be truncated.");
+        TestAssert.False(match.Snippet.StartsWith(" ", StringComparison.Ordinal), "The snippet should be trimmed.");
+        TestAssert.Contains("prefix", match.Snippet);
     }
 
     public static async Task AgentOrchestratorSummarizesWorkspaceAsync()
@@ -372,7 +604,8 @@ internal static class ToolTests
             path => new ITool[]
             {
                 new ListFilesTool(path),
-                new ReadFileTool(path)
+                new ReadFileTool(path),
+                new SearchFilesTool(path)
             },
             modelClient,
             options);

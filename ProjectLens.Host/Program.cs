@@ -18,7 +18,8 @@ var orchestrator = new AgentOrchestrator(
     workspacePath => new ITool[]
     {
         new ListFilesTool(workspacePath),
-        new ReadFileTool(workspacePath)
+        new ReadFileTool(workspacePath),
+        new SearchFilesTool(workspacePath)
     },
     modelClient,
     new AgentOrchestratorOptions
