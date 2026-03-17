@@ -4,6 +4,8 @@ ProjectLens is a **.NET 8 AI agent** that analyzes your local codebase using **t
 
 **ProjectLens lets you ask questions about your codebase—and answers them by actually reading your code.**
 
+> Built with a clean separation between reasoning (LLM), execution (tools), and control (orchestrator).
+
 Instead of hardcoded workflows, ProjectLens exposes capabilities through tools and lets the model decide:
 
 - what to inspect
@@ -105,14 +107,28 @@ Summarize this project
 
 ---
 
-## Features
+## 🔧 Features
 
-- Model-driven orchestration loop
-- Tool-based architecture that is easy to extend
-- Safe filesystem access bounded to the workspace
-- Clean architecture separation
-- Rule-based fallback with no AI required
-- Testable components
+✅ Model-driven orchestration loop  
+✅ Tool-based architecture (extensible)  
+✅ Safe filesystem access (workspace-bound)  
+✅ Clean architecture separation  
+✅ Rule-based fallback (no AI required)  
+✅ Testable components  
+
+### 🧠 Intelligent Code Exploration
+
+✅ `list_files` – Discover workspace structure  
+✅ `read_file` – Read file contents safely  
+✅ `search_files` – 🔍 Search across codebase with:
+
+- keyword search across files
+- recursive directory traversal
+- file pattern filtering (e.g., *.cs, *.json)
+- case-sensitive / insensitive search
+- snippet extraction for context
+- binary file skipping
+- result limiting for performance
 
 ---
 
@@ -168,15 +184,30 @@ Try asking:
 - "Explain the architecture"
 - "Which files are important?"
 - "What does this repository do?"
+## 🔍 Example: Intelligent Search
+
+Prompt:
+
+"Find where AgentOrchestrator is implemented"
+
+What happens internally:
+
+1. Model decides to call `search_files`
+2. Tool scans workspace
+3. Returns matching files + snippets
+4. Model refines answer using actual code
+
+👉 No guessing. Fully grounded in your codebase.
 
 ---
 
-## Available Tools
+## 🛠️ Available Tools
 
-| Tool | Description |
-| --- | --- |
-| `list_files` | Lists files and directories |
-| `read_file` | Reads text-based files safely |
+| Tool          | Description |
+|---------------|------------|
+| list_files    | Lists files and directories in the workspace |
+| read_file     | Reads text-based files safely |
+| search_files  | Searches codebase for keywords with filtering and snippets |
 
 ---
 
@@ -206,13 +237,13 @@ If `ApiKey` or `Model` is not configured, ProjectLens automatically switches to 
 
 ---
 
-## Future Enhancements
+## 🔮 Future Enhancements
 
-- `search_files` tool
-- Git history analysis
-- Code dependency mapping
-- Semantic code understanding
-- Web UI
+🧬 Git history analysis (commit insights)  
+📊 Code dependency mapping  
+🧠 Semantic code understanding  
+🌐 Web UI  
+⚡ Performance optimization for large repositories  
 
 ---
 
@@ -244,3 +275,9 @@ If you find this useful:
 ## Final Thought
 
 ProjectLens is not just a tool - it is a pattern for building intelligent, safe, and extensible AI agents.
+
+Each tool represents a capability boundary.
+
+Adding intelligence = adding new tools.
+
+No change required in orchestrator.
