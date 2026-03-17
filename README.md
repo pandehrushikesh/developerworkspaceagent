@@ -1,6 +1,45 @@
-# ProjectLens
+# 🚀 ProjectLens – AI-Powered Developer Workspace Agent
 
-ProjectLens is a .NET 8 console-based AI agent solution scaffolded with clean architecture boundaries and an optional OpenAI-backed model client.
+ProjectLens is a **.NET 8 AI agent** that analyzes your local codebase using **tool-based orchestration** and **LLM-driven reasoning**.
+
+Instead of hardcoded workflows, ProjectLens exposes capabilities (tools) and lets the model decide:
+- what to inspect
+- which files to read
+- how to answer your query
+
+---
+
+## 🧠 What Problem Does It Solve?
+
+Developers often ask:
+- "What does this repo do?"
+- "Where is this feature implemented?"
+- "Which files are important?"
+- "What changed recently?"
+
+ProjectLens answers these questions by:
+- exploring your workspace
+- reading relevant files
+- reasoning over actual data (not guessing)
+
+---
+
+## ⚙️ How It Works
+
+```text
+User Prompt
+   ↓
+Agent Orchestrator
+   ↓
+Model (LLM)
+   ↓
+Tool Calls (if needed)
+   ↓
+Filesystem Tools (list_files, read_file)
+   ↓
+Back to Model
+   ↓
+Final Answer
 
 ## Project Structure
 
