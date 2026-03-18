@@ -468,6 +468,7 @@ internal static class ToolTests
         TestAssert.Contains("ProcessAsync", compressed);
         TestAssert.Contains("RefactorAsync", compressed);
         TestAssert.Contains("Control flow:", compressed);
+        TestAssert.Contains("await ProcessAsync();", compressed);
         TestAssert.Contains("Relevant snippets:", compressed);
         return Task.CompletedTask;
     }
@@ -497,6 +498,7 @@ internal static class ToolTests
             - await DiscoverArchives();
             - await EstimateArchiveSize();
             - await ExtractArchives();
+            Evidence basis: read_file returned truncated content at 8000 characters; recommendations should stay grounded to that partial excerpt.
             """);
 
         TestAssert.Contains("Earlier summary.", summary);
@@ -504,6 +506,9 @@ internal static class ToolTests
         TestAssert.Contains("Important symbols: Installer", summary);
         TestAssert.Contains("EstimateArchiveSize", summary);
         TestAssert.Contains("ValidateDiskSpace", summary);
+        TestAssert.Contains("Evidence limitations:", summary);
+        TestAssert.Contains("truncated content", summary);
+        TestAssert.Contains("partial excerpt", summary);
         return Task.CompletedTask;
     }
 
@@ -764,6 +769,8 @@ internal static class ToolTests
 
         TestAssert.True(firstResponse.Success, "The first response should succeed.");
         TestAssert.True(secondResponse.Success, "The follow-up refactor response should succeed.");
+        TestAssert.Contains("Observed facts:", secondResponse.Output);
+        TestAssert.Contains("Inferred recommendations:", secondResponse.Output);
         TestAssert.Contains("refactor", secondResponse.Output);
         TestAssert.Contains("InstallAsync", secondResponse.Output);
     }
@@ -1200,6 +1207,8 @@ internal static class ToolTests
         TestAssert.Contains("already executed earlier", duplicateMessage.Output);
         TestAssert.Contains("provide the best grounded answer", duplicateMessage.Output);
         TestAssert.Contains("Choose a different action", duplicateMessage.Output);
+        TestAssert.Contains("observed facts", duplicateMessage.Output);
+        TestAssert.Contains("inferred recommendations", duplicateMessage.Output);
 
         return new ModelResponse(
             "Grounded final answer: use the existing evidence instead of repeating the same search.",
@@ -1212,7 +1221,8 @@ internal static class ToolTests
         TestAssert.True(toolMessages.Any(message =>
                 message.CallId == duplicateCallId &&
                 message.Output.Contains("already executed earlier", StringComparison.Ordinal) &&
-                message.Output.Contains("Prefer read_file", StringComparison.Ordinal)),
+                message.Output.Contains("Prefer read_file", StringComparison.Ordinal) &&
+                message.Output.Contains("observed facts", StringComparison.Ordinal)),
             "The duplicate prevention message should be present.");
 
         return new ModelResponse(
@@ -1258,11 +1268,24 @@ internal static class ToolTests
         TestAssert.Contains("For follow-up requests about refactoring", request.Instructions);
         TestAssert.Contains("Likely main flow files: installer.cs", request.Instructions);
         TestAssert.Contains("InstallAsync", request.Instructions);
-        TestAssert.Contains("ValidateDiskSpace", request.Instructions);
-        TestAssert.Contains("ExtractArchives", request.Instructions);
+        TestAssert.Contains("await DiscoverArchives();", request.Instructions);
+        TestAssert.Contains("await ExtractArchives();", request.Instructions);
+        TestAssert.Contains("observed facts", request.Instructions);
+        TestAssert.Contains("Evidence limitations:", request.Instructions);
+        TestAssert.Contains("inferred recommendations", request.Instructions);
+        TestAssert.Contains("label broader refactor ideas as inferred", request.Instructions);
 
         return new ModelResponse(
-            "Grounded final answer: refactor InstallAsync by extracting archive discovery, disk validation, extraction, and confirmation into smaller methods while preserving the current flow.",
+            """
+            Observed facts:
+            - installer.cs appears to contain the main flow.
+            - InstallAsync was observed directly, and the excerpt also showed archive discovery, disk-space validation, and extraction steps in the control flow.
+            - The current understanding comes from a bounded read_file excerpt rather than a full repository-wide implementation review.
+
+            Inferred recommendations:
+            - A reasonable refactor direction is to keep InstallAsync as the coordinator and extract archive discovery, validation, extraction, and confirmation into smaller responsibilities.
+            - Those extractions should be treated as proposed structure, not as classes already observed in the repository.
+            """,
             ResponseId: "resp-refactor-follow-up");
     }
 

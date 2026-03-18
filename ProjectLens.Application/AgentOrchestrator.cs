@@ -443,6 +443,10 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             After search_files returns likely matches, prefer read_file on the most relevant result instead of repeating search_files.
             For follow-up requests about refactoring, improving, or explaining logic you already inspected, use the existing session context and prior file summaries first.
             If the session already identifies a likely file or flow, propose the best grounded answer or refactor direction you can before requesting more tool calls.
+            For refactor, design, or code-improvement prompts, clearly separate observed facts from inferred recommendations.
+            Present observed facts only from actual tool output.
+            Present refactor ideas, extraction plans, candidate classes, candidate methods, and skeleton structures as inferred recommendations unless they were explicitly observed.
+            If the evidence is partial, preview-based, snippet-based, or truncated, say that clearly and keep recommendations at a skeleton level.
             Avoid unnecessary or redundant tool calls.
             Return a final answer as soon as enough evidence is available.
             If the evidence is partial, answer with uncertainty rather than looping forever.
@@ -498,12 +502,17 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
 
         if (string.Equals(toolName, ReadFileToolName, StringComparison.OrdinalIgnoreCase))
         {
-            if (!TryParseReadFilePayload(rawToolOutput, out var path, out var content))
+            if (!TryParseReadFilePayload(rawToolOutput, out var path, out var content, out var isTruncated, out var characterCount))
             {
                 return rawToolOutput;
             }
 
-            return _fileCompressor?.Compress(path, content, userPrompt) ?? rawToolOutput;
+            var compressedOutput = _fileCompressor?.Compress(path, content, userPrompt) ?? rawToolOutput;
+            var evidenceBasis = isTruncated
+                ? $"Evidence basis: read_file returned truncated content at {characterCount} characters; recommendations should stay grounded to that partial excerpt."
+                : $"Evidence basis: read_file returned a bounded excerpt of {characterCount} characters; use observed facts from this excerpt and label broader refactor ideas as inferred.";
+
+            return $"{compressedOutput}{Environment.NewLine}{evidenceBasis}";
         }
 
         if (string.Equals(toolName, SearchFilesToolName, StringComparison.OrdinalIgnoreCase))
@@ -542,6 +551,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             var builder = new StringBuilder();
             builder.AppendLine($"search_files query: {query}");
             builder.AppendLine($"Total matches: {totalMatches}");
+            builder.AppendLine("Evidence basis: search_files returns filename matches and snippets only; file contents have not been fully read yet.");
 
             foreach (var matchLine in matchLines)
             {
@@ -559,10 +569,14 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
     private static bool TryParseReadFilePayload(
         string rawToolOutput,
         out string path,
-        out string content)
+        out string content,
+        out bool isTruncated,
+        out int characterCount)
     {
         path = string.Empty;
         content = string.Empty;
+        isTruncated = false;
+        characterCount = 0;
 
         try
         {
@@ -570,6 +584,10 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             var root = document.RootElement;
             path = root.GetProperty("Path").GetString() ?? string.Empty;
             content = root.GetProperty("Content").GetString() ?? string.Empty;
+            isTruncated = root.TryGetProperty("IsTruncated", out var isTruncatedElement) && isTruncatedElement.GetBoolean();
+            characterCount = root.TryGetProperty("CharacterCount", out var characterCountElement)
+                ? characterCountElement.GetInt32()
+                : content.Length;
             return !string.IsNullOrWhiteSpace(path);
         }
         catch
@@ -642,6 +660,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         builder.Append("This exact tool call was already executed earlier, so rerunning it is unlikely to add new evidence. ");
         builder.Append("Reuse the prior tool output already in the conversation. ");
         builder.Append("Choose a different action if you still need more evidence. ");
+        builder.Append("If you answer now from partial evidence, separate observed facts from inferred recommendations. ");
 
         if (string.Equals(toolCall.ToolName, SearchFilesToolName, StringComparison.OrdinalIgnoreCase))
         {
