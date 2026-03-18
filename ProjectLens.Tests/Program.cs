@@ -1,6 +1,7 @@
 using ProjectLens.Application;
 using ProjectLens.Application.Abstractions;
 using ProjectLens.Domain;
+using ProjectLens.Infrastructure;
 using ProjectLens.Infrastructure.Tools;
 using ProjectLens.Infrastructure.Tools.Models;
 using System.Text.Json;
@@ -27,11 +28,18 @@ internal static class Program
             ("SearchFilesTool honors case sensitivity", ToolTests.SearchFilesToolHonorsCaseSensitivityAsync),
             ("SearchFilesTool skips binary files", ToolTests.SearchFilesToolSkipsBinaryFilesAsync),
             ("SearchFilesTool returns stable readable snippets", ToolTests.SearchFilesToolReturnsReadableSnippetsAsync),
+            ("InMemoryAgentSessionStore saves and loads state", ToolTests.InMemoryAgentSessionStoreSavesAndLoadsStateAsync),
+            ("RuleBasedFileCompressor preserves actionable structure", ToolTests.RuleBasedFileCompressorPreservesActionableStructureAsync),
+            ("RuleBasedSessionSummarizer retains actionable findings", ToolTests.RuleBasedSessionSummarizerRetainsActionableFindingsAsync),
             ("AgentOrchestrator summarizes README and project file", ToolTests.AgentOrchestratorSummarizesWorkspaceAsync),
             ("AgentOrchestrator handles missing optional files", ToolTests.AgentOrchestratorHandlesMissingWorkspaceFilesAsync),
             ("AgentOrchestrator requires registered tools", ToolTests.AgentOrchestratorRequiresRegisteredToolsAsync),
             ("AgentOrchestrator returns final answer without tool call", ToolTests.AgentOrchestratorReturnsFinalAnswerWithoutToolCallAsync),
             ("AgentOrchestrator chains previous response id after a tool call", ToolTests.AgentOrchestratorChainsPreviousResponseIdAsync),
+            ("AgentOrchestrator reuses session state across follow-up prompts", ToolTests.AgentOrchestratorReusesSessionStateAcrossFollowUpPromptsAsync),
+            ("AgentOrchestrator uses session context for refactor follow-up", ToolTests.AgentOrchestratorUsesSessionContextForRefactorFollowUpAsync),
+            ("AgentOrchestrator persists session state without summarizer", ToolTests.AgentOrchestratorPersistsSessionStateWithoutSummarizerAsync),
+            ("AgentOrchestrator refreshes visited file recency", ToolTests.AgentOrchestratorRefreshesVisitedFileRecencyAsync),
             ("AgentOrchestrator prevents duplicate tool calls", ToolTests.AgentOrchestratorPreventsDuplicateToolCallsAsync),
             ("AgentOrchestrator continues after duplicate search prevention", ToolTests.AgentOrchestratorContinuesAfterDuplicateSearchPreventionAsync),
             ("AgentOrchestrator handles a single tool call", ToolTests.AgentOrchestratorHandlesSingleToolCallAsync),
@@ -408,6 +416,97 @@ internal static class ToolTests
         TestAssert.Contains("prefix", match.Snippet);
     }
 
+    public static async Task InMemoryAgentSessionStoreSavesAndLoadsStateAsync()
+    {
+        IAgentSessionStore store = new InMemoryAgentSessionStore();
+        var sessionState = new AgentSessionState
+        {
+            SessionId = "session-1",
+            WorkspacePath = "workspace",
+            WorkingSummary = "Summary",
+            VisitedFiles = ["README.md"],
+            RecentToolHistory = ["read_file: README.md"]
+        };
+
+        await store.SaveAsync(sessionState);
+        var loadedState = await store.GetAsync("session-1");
+
+        TestAssert.NotNull(loadedState);
+        TestAssert.Equal("Summary", loadedState!.WorkingSummary);
+        TestAssert.SequenceEqual(new[] { "README.md" }, loadedState.VisitedFiles.ToArray());
+    }
+
+    public static Task RuleBasedFileCompressorPreservesActionableStructureAsync()
+    {
+        IFileCompressor compressor = new RuleBasedFileCompressor();
+        var compressed = compressor.Compress(
+            "src/AgentOrchestrator.cs",
+            """
+            namespace ProjectLens.Application;
+
+            public sealed class AgentOrchestrator
+            {
+                public Task ProcessAsync() => Task.CompletedTask;
+
+                public async Task RefactorAsync()
+                {
+                    if (true)
+                    {
+                        await ProcessAsync();
+                    }
+
+                    return;
+                }
+            }
+            """,
+            "Now refactor that logic.");
+
+        TestAssert.Contains("File: src/AgentOrchestrator.cs", compressed);
+        TestAssert.Contains("Preview:", compressed);
+        TestAssert.Contains("Likely classes:", compressed);
+        TestAssert.Contains("Likely methods:", compressed);
+        TestAssert.Contains("ProcessAsync", compressed);
+        TestAssert.Contains("RefactorAsync", compressed);
+        TestAssert.Contains("Control flow:", compressed);
+        TestAssert.Contains("Relevant snippets:", compressed);
+        return Task.CompletedTask;
+    }
+
+    public static Task RuleBasedSessionSummarizerRetainsActionableFindingsAsync()
+    {
+        ISessionSummarizer summarizer = new RuleBasedSessionSummarizer();
+        var sessionState = new AgentSessionState
+        {
+            SessionId = "session-1",
+            WorkspacePath = "workspace",
+            WorkingSummary = "Earlier summary.",
+            VisitedFiles = ["README.md", "src/AgentOrchestrator.cs"],
+            RecentToolHistory = ["search_files: AgentOrchestrator.cs"]
+        };
+
+        var summary = summarizer.UpdateSummary(
+            sessionState,
+            "read_file",
+            """
+            File: src/Installer.cs
+            Preview: public sealed class Installer { public async Task InstallAsync() { ... } }
+            Likely classes: Installer
+            Likely methods: DiscoverArchives, EstimateArchiveSize, ValidateDiskSpace, ExtractArchives, ConfirmInstallation
+            Control flow: if (!await ValidateDiskSpace()), await ExtractArchives(), return;
+            Relevant snippets:
+            - await DiscoverArchives();
+            - await EstimateArchiveSize();
+            - await ExtractArchives();
+            """);
+
+        TestAssert.Contains("Earlier summary.", summary);
+        TestAssert.Contains("Likely main flow files: src/Installer.cs", summary);
+        TestAssert.Contains("Important symbols: Installer", summary);
+        TestAssert.Contains("EstimateArchiveSize", summary);
+        TestAssert.Contains("ValidateDiskSpace", summary);
+        return Task.CompletedTask;
+    }
+
     public static async Task AgentOrchestratorSummarizesWorkspaceAsync()
     {
         using var workspace = new TestWorkspace();
@@ -534,6 +633,260 @@ internal static class ToolTests
         TestAssert.True(response.Success, "The orchestrator should succeed.");
         TestAssert.Contains("This project reads files safely.", response.Output);
         TestAssert.Equal(1, response.ToolResults?.Count ?? 0);
+    }
+
+    public static async Task AgentOrchestratorReusesSessionStateAcrossFollowUpPromptsAsync()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.WriteText("README.md", "ProjectLens remembers context.");
+
+        var sessionStore = new InMemoryAgentSessionStore();
+        IFileCompressor fileCompressor = new RuleBasedFileCompressor();
+        ISessionSummarizer sessionSummarizer = new RuleBasedSessionSummarizer();
+
+        var callCount = 0;
+        var modelClient = new ScriptedModelClient(request =>
+        {
+            callCount++;
+            return callCount switch
+            {
+                1 => new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-readme",
+                            "read_file",
+                            new Dictionary<string, string> { ["path"] = "README.md" })
+                    },
+                    ResponseId: "resp-session-1"),
+                2 => BuildFinalResponseAfterTool(
+                    request,
+                    "call-readme",
+                    "ProjectLens remembers context.",
+                    responseId: "resp-session-2"),
+                3 => BuildFollowUpResponseWithSessionContext(request),
+                _ => throw new InvalidOperationException("Unexpected model invocation.")
+            };
+        });
+
+        var orchestrator = new AgentOrchestrator(
+            path => new ITool[]
+            {
+                new ListFilesTool(path),
+                new ReadFileTool(path),
+                new SearchFilesTool(path)
+            },
+            modelClient,
+            new AgentOrchestratorOptions { MaxIterations = 4 },
+            sessionStore,
+            fileCompressor,
+            sessionSummarizer);
+
+        var firstResponse = await orchestrator.ProcessAsync(
+            new AgentRequest("Summarize the README", workspace.RootPath));
+        var secondResponse = await orchestrator.ProcessAsync(
+            new AgentRequest("What did we already inspect?", workspace.RootPath));
+
+        TestAssert.True(firstResponse.Success, "The first response should succeed.");
+        TestAssert.True(secondResponse.Success, "The follow-up response should succeed.");
+        TestAssert.Contains("README.md", secondResponse.Output);
+        TestAssert.Contains("session summary", secondResponse.Output);
+    }
+
+    public static async Task AgentOrchestratorUsesSessionContextForRefactorFollowUpAsync()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.WriteText(
+            "installer.cs",
+            """
+            public sealed class Installer
+            {
+                public async Task InstallAsync()
+                {
+                    await DiscoverArchives();
+                    if (!await ValidateDiskSpace())
+                    {
+                        return;
+                    }
+
+                    await ExtractArchives();
+                    await ConfirmInstallation();
+                }
+            }
+            """);
+
+        var sessionStore = new InMemoryAgentSessionStore();
+        IFileCompressor fileCompressor = new RuleBasedFileCompressor();
+        ISessionSummarizer sessionSummarizer = new RuleBasedSessionSummarizer();
+
+        var callCount = 0;
+        var modelClient = new ScriptedModelClient(request =>
+        {
+            callCount++;
+            return callCount switch
+            {
+                1 => new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-installer",
+                            "read_file",
+                            new Dictionary<string, string> { ["path"] = "installer.cs" })
+                    },
+                    ResponseId: "resp-refactor-1"),
+                2 => BuildFinalResponseAfterTool(
+                    request,
+                    "call-installer",
+                    "Installer",
+                    responseId: "resp-refactor-2"),
+                3 => BuildRefactorFollowUpFromSessionContext(request),
+                _ => throw new InvalidOperationException("Unexpected model invocation.")
+            };
+        });
+
+        var orchestrator = new AgentOrchestrator(
+            path => new ITool[]
+            {
+                new ListFilesTool(path),
+                new ReadFileTool(path),
+                new SearchFilesTool(path)
+            },
+            modelClient,
+            new AgentOrchestratorOptions { MaxIterations = 4 },
+            sessionStore,
+            fileCompressor,
+            sessionSummarizer);
+
+        var firstResponse = await orchestrator.ProcessAsync(
+            new AgentRequest("Explain the installer flow", workspace.RootPath));
+        var secondResponse = await orchestrator.ProcessAsync(
+            new AgentRequest("Now refactor that logic.", workspace.RootPath));
+
+        TestAssert.True(firstResponse.Success, "The first response should succeed.");
+        TestAssert.True(secondResponse.Success, "The follow-up refactor response should succeed.");
+        TestAssert.Contains("refactor", secondResponse.Output);
+        TestAssert.Contains("InstallAsync", secondResponse.Output);
+    }
+
+    public static async Task AgentOrchestratorPersistsSessionStateWithoutSummarizerAsync()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.WriteText("README.md", "ProjectLens remembers context.");
+
+        var sessionStore = new InMemoryAgentSessionStore();
+        var callCount = 0;
+        var modelClient = new ScriptedModelClient(request =>
+        {
+            callCount++;
+            return callCount switch
+            {
+                1 => new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-read-1",
+                            "read_file",
+                            new Dictionary<string, string> { ["path"] = "README.md" })
+                    },
+                    ResponseId: "resp-no-summary-1"),
+                2 => new ModelResponse(
+                    "Grounded final answer: README.md was inspected.",
+                    ResponseId: "resp-no-summary-2"),
+                _ => throw new InvalidOperationException("Unexpected model invocation.")
+            };
+        });
+
+        var orchestrator = new AgentOrchestrator(
+            path => new ITool[]
+            {
+                new ListFilesTool(path),
+                new ReadFileTool(path),
+                new SearchFilesTool(path)
+            },
+            modelClient,
+            new AgentOrchestratorOptions { MaxIterations = 3 },
+            sessionStore,
+            fileCompressor: null,
+            sessionSummarizer: null);
+
+        var request = new AgentRequest(
+            "Inspect the README",
+            workspace.RootPath,
+            new Dictionary<string, string> { ["sessionId"] = "session-no-summary" });
+
+        var response = await orchestrator.ProcessAsync(request);
+        var savedState = await sessionStore.GetAsync("session-no-summary");
+
+        TestAssert.True(response.Success, "The response should succeed.");
+        TestAssert.NotNull(savedState);
+        TestAssert.SequenceEqual(new[] { "README.md" }, savedState!.VisitedFiles.ToArray());
+        TestAssert.True(savedState.RecentToolHistory.Count > 0, "Tool history should still be persisted.");
+        TestAssert.Equal(string.Empty, savedState.WorkingSummary);
+    }
+
+    public static async Task AgentOrchestratorRefreshesVisitedFileRecencyAsync()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.WriteText("README.md", "ProjectLens remembers context.");
+        workspace.WriteText("docs.txt", "Documentation");
+
+        var sessionStore = new InMemoryAgentSessionStore();
+        var sessionState = new AgentSessionState
+        {
+            SessionId = "session-recency",
+            WorkspacePath = workspace.RootPath,
+            WorkingSummary = "Summary",
+            VisitedFiles = ["README.md", "docs.txt"],
+            RecentToolHistory = ["read_file: README.md", "read_file: docs.txt"]
+        };
+        await sessionStore.SaveAsync(sessionState);
+
+        var callCount = 0;
+        var modelClient = new ScriptedModelClient(request =>
+        {
+            callCount++;
+            return callCount switch
+            {
+                1 => new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-read-1",
+                            "read_file",
+                            new Dictionary<string, string> { ["path"] = "README.md" })
+                    },
+                    ResponseId: "resp-recency-1"),
+                2 => new ModelResponse(
+                    "Grounded final answer: README.md was revisited.",
+                    ResponseId: "resp-recency-2"),
+                _ => throw new InvalidOperationException("Unexpected model invocation.")
+            };
+        });
+
+        var orchestrator = new AgentOrchestrator(
+            path => new ITool[]
+            {
+                new ListFilesTool(path),
+                new ReadFileTool(path),
+                new SearchFilesTool(path)
+            },
+            modelClient,
+            new AgentOrchestratorOptions { MaxIterations = 3 },
+            sessionStore,
+            new RuleBasedFileCompressor(),
+            new RuleBasedSessionSummarizer());
+
+        var request = new AgentRequest(
+            "Revisit the README",
+            workspace.RootPath,
+            new Dictionary<string, string> { ["sessionId"] = "session-recency" });
+
+        var response = await orchestrator.ProcessAsync(request);
+        var savedState = await sessionStore.GetAsync("session-recency");
+
+        TestAssert.True(response.Success, "The response should succeed.");
+        TestAssert.NotNull(savedState);
+        TestAssert.SequenceEqual(new[] { "docs.txt", "README.md" }, savedState!.VisitedFiles.ToArray());
     }
 
     public static async Task AgentOrchestratorPreventsDuplicateToolCallsAsync()
@@ -845,6 +1198,8 @@ internal static class ToolTests
             .Single(message => message.CallId == duplicateCallId);
 
         TestAssert.Contains("already executed earlier", duplicateMessage.Output);
+        TestAssert.Contains("provide the best grounded answer", duplicateMessage.Output);
+        TestAssert.Contains("Choose a different action", duplicateMessage.Output);
 
         return new ModelResponse(
             "Grounded final answer: use the existing evidence instead of repeating the same search.",
@@ -854,7 +1209,10 @@ internal static class ToolTests
     private static ModelResponse BuildReadRequestAfterDuplicate(ModelRequest request, string duplicateCallId)
     {
         var toolMessages = request.Conversation.OfType<ModelToolResultMessage>().ToArray();
-        TestAssert.True(toolMessages.Any(message => message.CallId == duplicateCallId && message.Output.Contains("already executed earlier", StringComparison.Ordinal)),
+        TestAssert.True(toolMessages.Any(message =>
+                message.CallId == duplicateCallId &&
+                message.Output.Contains("already executed earlier", StringComparison.Ordinal) &&
+                message.Output.Contains("Prefer read_file", StringComparison.Ordinal)),
             "The duplicate prevention message should be present.");
 
         return new ModelResponse(
@@ -882,6 +1240,30 @@ internal static class ToolTests
         return new ModelResponse(
             "Grounded final answer: AgentOrchestrator is implemented in ProjectLens.Application/AgentOrchestrator.cs.",
             ResponseId: "resp-after-read");
+    }
+
+    private static ModelResponse BuildFollowUpResponseWithSessionContext(ModelRequest request)
+    {
+        TestAssert.Contains("Working summary:", request.Instructions);
+        TestAssert.Contains("Visited files: README.md", request.Instructions);
+        TestAssert.Contains("read_file:", request.Instructions);
+
+        return new ModelResponse(
+            "Grounded final answer: the session summary shows that README.md was already inspected.",
+            ResponseId: "resp-follow-up");
+    }
+
+    private static ModelResponse BuildRefactorFollowUpFromSessionContext(ModelRequest request)
+    {
+        TestAssert.Contains("For follow-up requests about refactoring", request.Instructions);
+        TestAssert.Contains("Likely main flow files: installer.cs", request.Instructions);
+        TestAssert.Contains("InstallAsync", request.Instructions);
+        TestAssert.Contains("ValidateDiskSpace", request.Instructions);
+        TestAssert.Contains("ExtractArchives", request.Instructions);
+
+        return new ModelResponse(
+            "Grounded final answer: refactor InstallAsync by extracting archive discovery, disk validation, extraction, and confirmation into smaller methods while preserving the current flow.",
+            ResponseId: "resp-refactor-follow-up");
     }
 
     private static T Deserialize<T>(string? json)
@@ -1048,6 +1430,14 @@ internal static class TestAssert
         if (value is not null)
         {
             throw new InvalidOperationException($"Expected null, but got '{value}'.");
+        }
+    }
+
+    public static void NotNull(object? value)
+    {
+        if (value is null)
+        {
+            throw new InvalidOperationException("Expected a non-null value.");
         }
     }
 

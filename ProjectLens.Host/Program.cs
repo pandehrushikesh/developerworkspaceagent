@@ -2,6 +2,7 @@ using System.Text.Json;
 using ProjectLens.Application;
 using ProjectLens.Application.Abstractions;
 using ProjectLens.Domain;
+using ProjectLens.Infrastructure;
 using ProjectLens.Infrastructure.OpenAI;
 using ProjectLens.Infrastructure.Tools;
 
@@ -16,6 +17,10 @@ try
         modelClient = new OpenAiModelClient(settings.OpenAI);
     }
 
+    IAgentSessionStore sessionStore = new InMemoryAgentSessionStore();
+    IFileCompressor fileCompressor = new RuleBasedFileCompressor();
+    ISessionSummarizer sessionSummarizer = new RuleBasedSessionSummarizer();
+
     var orchestrator = new AgentOrchestrator(
         workspacePath => new ITool[]
         {
@@ -27,7 +32,10 @@ try
         new AgentOrchestratorOptions
         {
             MaxIterations = settings.OpenAI.MaxIterations
-        });
+        },
+        sessionStore,
+        fileCompressor,
+        sessionSummarizer);
 
     Console.WriteLine("ProjectLens host is ready.");
     Console.WriteLine(modelClient is null
@@ -49,20 +57,25 @@ try
         return;
     }
 
-    var userPrompt = ReadRequiredInput("Enter your prompt:");
-    if (userPrompt is null)
-    {
-        Console.WriteLine("A prompt is required. Exiting.");
-        return;
-    }
-
     Console.WriteLine();
     Console.WriteLine($"Analyzing workspace: {normalizedWorkspacePath}");
+    Console.WriteLine("Enter prompts for this workspace. Submit an empty prompt to exit.");
 
-    var request = new AgentRequest(userPrompt, normalizedWorkspacePath);
-    var response = await orchestrator.ProcessAsync(request);
+    while (true)
+    {
+        var userPrompt = ReadRequiredInput("Enter your prompt:");
+        if (userPrompt is null)
+        {
+            Console.WriteLine("Session ended.");
+            break;
+        }
 
-    PrintResponse(response);
+        var request = new AgentRequest(userPrompt, normalizedWorkspacePath);
+        var response = await orchestrator.ProcessAsync(request);
+
+        PrintResponse(response);
+        Console.WriteLine();
+    }
 }
 catch (Exception exception)
 {
