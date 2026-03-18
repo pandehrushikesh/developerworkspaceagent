@@ -1,6 +1,6 @@
 # ProjectLens - AI-Powered Developer Workspace Agent
 
-ProjectLens is a **.NET 8 AI agent** that analyzes your local codebase using **tool-based orchestration** and **LLM-driven reasoning**.
+ProjectLens is a **.NET 8 AI agent** that analyzes your local codebase using **tool-based orchestration**, **LLM-driven reasoning**, and **session-aware memory**.
 
 **ProjectLens lets you ask questions about your codebase—and answers them by actually reading your code.**
 
@@ -35,39 +35,73 @@ ProjectLens answers these questions by:
 
 ```text
 User Prompt
-   |
-   v
+     |
+     v
 Agent Orchestrator
-   |
-   v
+     |
+     v
+Session Memory (v0.2)
+     |
+     v
 Model (LLM)
-   |
-   v
+     |
+     v
 Tool Calls (if needed)
-   |
-   v
-Filesystem Tools (list_files, read_file)
-   |
-   v
+     |
+     v
+Filesystem Tools (list_files, read_file, search_files)
+     |
+     v
+Compressed Output
+     |
+     v
 Back to Model
-   |
-   v
+     |
+     v
 Final Answer
 
 ```
-## 🧪 Example
+---
 
-**Prompt:**
-Summarize this project
+## 🧠 What's New in v0.2 — Stateful Agent
 
-**Output:**
-- .NET 8 application using clean architecture
+ProjectLens now supports **session-aware interactions**.
 
-- Implements tool-based AI agent orchestration
+This means the agent can:
 
-- Uses filesystem tools (list_files, read_file)
+- remember previously visited files
+- retain recent tool outputs
+- maintain a working summary of the codebase
+- reuse context across follow-up prompts
 
-- Supports OpenAI-based reasoning with fallback mode
+👉 You no longer need to repeat context.
+
+---
+
+### Example
+
+**Prompt 1:**
+Search for unzip logic and explain the flow
+
+**Prompt 2:**
+Now refactor that logic
+
+👉 The second prompt builds on the first instead of starting from scratch.
+
+---
+
+## 🧩 Context Compression
+
+To handle large files efficiently, ProjectLens compresses file content into:
+
+- File preview
+- Key symbols (classes, methods)
+- Relevant snippets
+
+This ensures:
+- efficient token usage
+- better grounding
+- faster reasoning loops
 
 ---
 
@@ -108,13 +142,16 @@ Summarize this project
 ---
 
 ## 🔧 Features
-
 ✅ Model-driven orchestration loop  
 ✅ Tool-based architecture (extensible)  
 ✅ Safe filesystem access (workspace-bound)  
 ✅ Clean architecture separation  
 ✅ Rule-based fallback (no AI required)  
 ✅ Testable components  
+✅ Session memory (stateful interactions)  
+✅ Context compression for large files  
+✅ Follow-up prompt support (multi-step reasoning)
+ 
 
 ### 🧠 Intelligent Code Exploration
 
@@ -219,8 +256,24 @@ It correctly identified:
 - extraction workflow
 - SharpCompress usage
 - helper utilities
-
 ---
+
+## 🧪 Follow-Up Example (v0.2)
+
+### Prompt 1:
+Search for unzip logic and explain the flow
+
+### Prompt 2:
+Now refactor that logic
+
+### Behavior:
+- First prompt explores repository
+- Second prompt reuses session memory
+- No need to re-scan entire codebase
+
+👉 This enables iterative developer workflows.
+---
+
 
 ## 🛠️ Available Tools
 
@@ -255,11 +308,19 @@ If `ApiKey` or `Model` is not configured, ProjectLens automatically switches to 
 - All data access happens via tools
 - No direct filesystem or system access from the model
 - Deterministic and AI-hybrid approach
+---
 
+## ⚠️ Current Limitations
+
+- Session memory is **in-memory only** (lost on restart)
+- Summarization is **rule-based**
+- Refactor suggestions may include inferred structure (next improvement area)
 ---
 
 ## 🔮 Future Enhancements
 
+🧠 Improved grounding (facts vs inference separation)  
+💾 Persistent session memory (disk-based)  
 🧬 Git history analysis (commit insights)  
 📊 Code dependency mapping  
 🧠 Semantic code understanding  
@@ -292,7 +353,7 @@ If you find this useful:
 - Share feedback
 
 ---
-
+> From Stateless Exploration → To Stateful Understanding
 ## Final Thought
 
 ProjectLens is not just a tool - it is a pattern for building intelligent, safe, and extensible AI agents.
@@ -302,3 +363,9 @@ Each tool represents a capability boundary.
 Adding intelligence = adding new tools.
 
 No change required in orchestrator.
+---
+---
+
+## 📌 Version
+
+**v0.2 — Stateful Agent**
