@@ -186,11 +186,11 @@ Try asking:
 - "What does this repository do?"
 ## 🔍 Example: Intelligent Search
 
-Prompt:
+### Prompt:
 
 "Find where AgentOrchestrator is implemented"
 
-What happens internally:
+### What happens internally:
 
 1. Model decides to call `search_files`
 2. Tool scans workspace
@@ -198,6 +198,27 @@ What happens internally:
 4. Model refines answer using actual code
 
 👉 No guessing. Fully grounded in your codebase.
+
+
+---
+## 🧪 Real Example (From Live Execution) with using OpenAI API key
+
+### 💬 Prompt:
+"Search for unzip, extract, or archive logic and explain which file contains the main extraction flow."
+### 🤖 Agent Behavior
+- Iteration 1 → search_files  
+- Iteration 2 → refine search_files  
+- Iteration 3 → read_file  
+- Iteration 4 → final answer
+
+### ✅ Final Answer
+The file "Program.cs" contains the main extraction flow for unzip and archive logic.
+It correctly identified:
+- archive discovery logic
+- disk space validation
+- extraction workflow
+- SharpCompress usage
+- helper utilities
 
 ---
 
