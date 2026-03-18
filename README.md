@@ -1,6 +1,6 @@
 # ProjectLens - AI-Powered Developer Workspace Agent
 
-ProjectLens is a **.NET 8 AI agent** that analyzes your local codebase using **tool-based orchestration**, **LLM-driven reasoning**, and **session-aware memory**.
+ProjectLens is a **.NET 8 AI agent** that analyzes your local codebase using **tool-based orchestration**, **LLM-driven reasoning**, **session-aware memory**, and **grounded follow-up reasoning**.
 
 **ProjectLens lets you ask questions about your codebase—and answers them by actually reading your code.**
 
@@ -72,10 +72,43 @@ This means the agent can:
 - remember previously visited files
 - retain recent tool outputs
 - maintain a working summary of the codebase
-- reuse context across follow-up prompts
-
+- reuse context across follow-up prompts  
 👉 You no longer need to repeat context.
+---
 
+## 🧠 What's New in v0.3 — Grounded Reasoning
+
+ProjectLens now improves **trust and accuracy in follow-up responses**.
+
+The agent explicitly distinguishes between:
+
+- ✅ **Observed facts** (from tool outputs)
+- 💡 **Inferred recommendations** (based on partial evidence)
+
+This ensures:
+- no hallucinated implementation details
+- clearer reasoning boundaries
+- more trustworthy refactor/design suggestions
+
+---
+
+### Example
+
+**Prompt 1:**
+Search for unzip logic and explain the flow
+
+**Prompt 2:**
+Now refactor that logic
+
+### Before (v0.2)
+- Refactor suggestions could appear overly confident  
+- Some structure may be assumed  
+
+### Now (v0.3)
+- Clearly states what was actually observed  
+- Clearly labels inferred refactor suggestions  
+- Avoids pretending full knowledge of the repository  
+👉 The agent behaves more like a careful engineer than a guessing assistant.
 ---
 
 ### Example
@@ -102,6 +135,7 @@ This ensures:
 - efficient token usage
 - better grounding
 - faster reasoning loops
+- clear awareness of evidence limitations
 
 ---
 
@@ -150,7 +184,10 @@ This ensures:
 ✅ Testable components  
 ✅ Session memory (stateful interactions)  
 ✅ Context compression for large files  
-✅ Follow-up prompt support (multi-step reasoning)
+✅ Follow-up prompt support (multi-step reasoning)  
+✅ Grounded reasoning (observed vs inferred separation)  
+✅ Evidence-aware responses (partial vs full context awareness)
+
  
 
 ### 🧠 Intelligent Code Exploration
@@ -232,8 +269,7 @@ Try asking:
 1. Model decides to call `search_files`
 2. Tool scans workspace
 3. Returns matching files + snippets
-4. Model refines answer using actual code
-
+4. Model refines answer using actual code  
 👉 No guessing. Fully grounded in your codebase.
 
 
@@ -269,9 +305,8 @@ Now refactor that logic
 ### Behavior:
 - First prompt explores repository
 - Second prompt reuses session memory
-- No need to re-scan entire codebase
-
-👉 This enables iterative developer workflows.
+- No need to re-scan entire codebase  
+👉 This enables iterative, **context-aware and grounded developer workflows**.
 ---
 
 
@@ -314,12 +349,12 @@ If `ApiKey` or `Model` is not configured, ProjectLens automatically switches to 
 
 - Session memory is **in-memory only** (lost on restart)
 - Summarization is **rule-based**
-- Refactor suggestions may include inferred structure (next improvement area)
+- Refactor suggestions are grounded but may remain high-level if evidence is partial
 ---
 
 ## 🔮 Future Enhancements
 
-🧠 Improved grounding (facts vs inference separation)  
+🧠 Deeper grounding via multi-file evidence aggregation  
 💾 Persistent session memory (disk-based)  
 🧬 Git history analysis (commit insights)  
 📊 Code dependency mapping  
@@ -355,17 +390,14 @@ If you find this useful:
 ---
 > From Stateless Exploration → To Stateful Understanding
 ## Final Thought
-
-ProjectLens is not just a tool - it is a pattern for building intelligent, safe, and extensible AI agents.
-
-Each tool represents a capability boundary.
-
-Adding intelligence = adding new tools.
-
-No change required in orchestrator.
+- ProjectLens is not just a tool - it is a pattern for building intelligent, safe, and extensible AI agents.
+- Each tool represents a capability boundary.
+- Adding intelligence = adding new tools.
+- No change required in orchestrator.  
+- It doesn’t just explore and remember — it reasons with awareness of its own knowledge boundaries.
 ---
 ---
 
 ## 📌 Version
 
-**v0.2 — Stateful Agent**
+**v0.3 — Grounded Stateful Agent**
