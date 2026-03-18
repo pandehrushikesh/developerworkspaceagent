@@ -36,6 +36,11 @@ public sealed class RuleBasedSessionSummarizer : ISessionSummarizer
             builder.AppendLine($"Observed operations: {string.Join(", ", findings.ObservedOperations)}");
         }
 
+        if (findings.EvidenceLimitations.Count > 0)
+        {
+            builder.AppendLine($"Evidence limitations: {string.Join(" | ", findings.EvidenceLimitations)}");
+        }
+
         if (sessionState.VisitedFiles.Count > 0)
         {
             builder.AppendLine(
@@ -75,6 +80,7 @@ public sealed class RuleBasedSessionSummarizer : ISessionSummarizer
         var files = new List<string>();
         var symbols = new List<string>();
         var operations = new List<string>();
+        var limitations = new List<string>();
 
         foreach (var rawLine in toolOutput.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
@@ -110,6 +116,12 @@ public sealed class RuleBasedSessionSummarizer : ISessionSummarizer
                 continue;
             }
 
+            if (line.StartsWith("Evidence basis: ", StringComparison.Ordinal))
+            {
+                limitations.Add(CreateSnippet(line["Evidence basis: ".Length..]));
+                continue;
+            }
+
             if (string.Equals(toolName, "search_files", StringComparison.OrdinalIgnoreCase) &&
                 line.StartsWith("search_files query: ", StringComparison.Ordinal))
             {
@@ -120,11 +132,13 @@ public sealed class RuleBasedSessionSummarizer : ISessionSummarizer
         return new SessionFindings(
             files.Distinct(StringComparer.OrdinalIgnoreCase).Take(4).ToArray(),
             symbols.Distinct(StringComparer.Ordinal).Take(8).ToArray(),
-            operations.Distinct(StringComparer.Ordinal).Take(8).ToArray());
+            operations.Distinct(StringComparer.Ordinal).Take(8).ToArray(),
+            limitations.Distinct(StringComparer.Ordinal).Take(3).ToArray());
     }
 
     private sealed record SessionFindings(
         IReadOnlyCollection<string> MainFlowFiles,
         IReadOnlyCollection<string> ImportantSymbols,
-        IReadOnlyCollection<string> ObservedOperations);
+        IReadOnlyCollection<string> ObservedOperations,
+        IReadOnlyCollection<string> EvidenceLimitations);
 }
