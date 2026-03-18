@@ -83,6 +83,8 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         {
             new ModelTextMessage("user", request.UserPrompt)
         };
+        var executedToolCalls = new HashSet<string>(StringComparer.Ordinal);
+        string? previousResponseId = null;
 
         for (var iteration = 1; iteration <= _options.MaxIterations; iteration++)
         {
@@ -95,9 +97,11 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
                 conversation.ToArray(),
                 registeredTools
                     .Select(tool => new ModelToolDefinition(tool.Name, tool.Description, tool.Parameters))
-                    .ToArray());
+                    .ToArray(),
+                previousResponseId);
 
             var modelResponse = await _modelClient!.GenerateAsync(modelRequest, cancellationToken);
+            previousResponseId = modelResponse.ResponseId;
 
             var toolCalls = modelResponse.ToolCalls?.Where(call => !string.IsNullOrWhiteSpace(call.ToolName)).ToArray()
                 ?? Array.Empty<ModelToolCall>();
@@ -122,6 +126,24 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
 
             foreach (var toolCall in toolCalls)
             {
+                var toolCallSignature = CreateToolCallSignature(toolCall);
+                if (!executedToolCalls.Add(toolCallSignature))
+                {
+                    const string duplicateToolCallMessage =
+                        "This exact tool call was already executed earlier. Use the existing evidence from prior tool outputs or choose a different action. Do not repeat the same tool call with the same arguments unless the earlier evidence was clearly insufficient.";
+
+                    steps.Add(new AgentExecutionStep(
+                        $"Prevented duplicate tool call '{toolCall.ToolName}' with the same arguments.",
+                        false));
+
+                    conversation.Add(new ModelToolResultMessage(
+                        toolCall.CallId,
+                        toolCall.ToolName,
+                        duplicateToolCallMessage));
+
+                    continue;
+                }
+
                 var executionResult = await ExecuteToolCallAsync(tools, toolCall, steps, cancellationToken);
                 toolResults.Add(executionResult);
 
@@ -288,9 +310,26 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             Do not use outside knowledge or make up file contents, project details, or tool results.
             If you need more information, request a tool call using one of the provided tools.
             Use tool calls only when they materially help answer the user's request.
+            Do not repeat the same tool call with the same arguments unless the earlier results were clearly insufficient.
+            After search_files returns likely matches, prefer read_file on the most relevant result instead of repeating search_files.
+            Avoid unnecessary or redundant tool calls.
+            Return a final answer as soon as enough evidence is available.
+            If the evidence is partial, answer with uncertainty rather than looping forever.
             When you give a final answer, ground every claim in either the user's request or prior tool outputs.
             If the available evidence is insufficient, say that directly.
             """;
+    }
+
+    private static string CreateToolCallSignature(ModelToolCall toolCall)
+    {
+        var normalizedArguments = toolCall.Arguments
+            .OrderBy(argument => argument.Key, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                argument => argument.Key,
+                argument => argument.Value?.Trim() ?? string.Empty,
+                StringComparer.OrdinalIgnoreCase);
+
+        return $"{toolCall.ToolName.Trim().ToLowerInvariant()}:{JsonSerializer.Serialize(normalizedArguments)}";
     }
 
     private async Task<ToolExecutionResult> ExecuteToolCallAsync(

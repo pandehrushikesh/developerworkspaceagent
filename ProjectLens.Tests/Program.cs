@@ -31,6 +31,9 @@ internal static class Program
             ("AgentOrchestrator handles missing optional files", ToolTests.AgentOrchestratorHandlesMissingWorkspaceFilesAsync),
             ("AgentOrchestrator requires registered tools", ToolTests.AgentOrchestratorRequiresRegisteredToolsAsync),
             ("AgentOrchestrator returns final answer without tool call", ToolTests.AgentOrchestratorReturnsFinalAnswerWithoutToolCallAsync),
+            ("AgentOrchestrator chains previous response id after a tool call", ToolTests.AgentOrchestratorChainsPreviousResponseIdAsync),
+            ("AgentOrchestrator prevents duplicate tool calls", ToolTests.AgentOrchestratorPreventsDuplicateToolCallsAsync),
+            ("AgentOrchestrator continues after duplicate search prevention", ToolTests.AgentOrchestratorContinuesAfterDuplicateSearchPreventionAsync),
             ("AgentOrchestrator handles a single tool call", ToolTests.AgentOrchestratorHandlesSingleToolCallAsync),
             ("AgentOrchestrator handles multiple tool calls", ToolTests.AgentOrchestratorHandlesMultipleToolCallsAsync),
             ("AgentOrchestrator stops at max iterations", ToolTests.AgentOrchestratorStopsAtMaxIterationsAsync)
@@ -472,6 +475,7 @@ internal static class ToolTests
         var modelClient = new ScriptedModelClient(request =>
         {
             TestAssert.Equal(1, request.Conversation.Count);
+            TestAssert.Null(request.PreviousResponseId);
             return new ModelResponse("Grounded answer without tools.");
         });
 
@@ -482,6 +486,199 @@ internal static class ToolTests
         TestAssert.True(response.Success, "The orchestrator should succeed.");
         TestAssert.Equal("Grounded answer without tools.", response.Output);
         TestAssert.Equal(0, response.ToolResults?.Count ?? 0);
+    }
+
+    public static async Task AgentOrchestratorChainsPreviousResponseIdAsync()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.WriteText("README.md", "This project reads files safely.");
+
+        var callCount = 0;
+        var modelClient = new ScriptedModelClient(request =>
+        {
+            callCount++;
+
+            if (callCount == 1)
+            {
+                TestAssert.Null(request.PreviousResponseId);
+                TestAssert.Equal(1, request.Conversation.Count);
+
+                return new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-readme",
+                            "read_file",
+                            new Dictionary<string, string> { ["path"] = "README.md" })
+                    },
+                    ResponseId: "resp-1");
+            }
+
+            if (callCount == 2)
+            {
+                TestAssert.Equal("resp-1", request.PreviousResponseId);
+                return BuildFinalResponseAfterTool(
+                    request,
+                    "call-readme",
+                    "This project reads files safely.",
+                    responseId: "resp-2");
+            }
+
+            throw new InvalidOperationException("Unexpected model invocation.");
+        });
+
+        var orchestrator = CreateOrchestrator(workspace.RootPath, modelClient);
+        var response = await orchestrator.ProcessAsync(
+            new AgentRequest("Summarize the README", workspace.RootPath));
+
+        TestAssert.True(response.Success, "The orchestrator should succeed.");
+        TestAssert.Contains("This project reads files safely.", response.Output);
+        TestAssert.Equal(1, response.ToolResults?.Count ?? 0);
+    }
+
+    public static async Task AgentOrchestratorPreventsDuplicateToolCallsAsync()
+    {
+        using var workspace = new TestWorkspace();
+        var searchTool = new CountingTool(
+            "search_files",
+            "Searches files.",
+            new Dictionary<string, string>
+            {
+                ["query"] = "Query text.",
+                ["path"] = "Search path."
+            },
+            _ => new ToolExecutionResult("search_files", true, """{"Matches":["src/AgentOrchestrator.cs"]}"""));
+
+        var callCount = 0;
+        var modelClient = new ScriptedModelClient(request =>
+        {
+            callCount++;
+            return callCount switch
+            {
+                1 => new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-search-1",
+                            "search_files",
+                            new Dictionary<string, string>
+                            {
+                                ["query"] = "AgentOrchestrator",
+                                ["path"] = "."
+                            })
+                    },
+                    ResponseId: "resp-search-1"),
+                2 => new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-search-2",
+                            "search_files",
+                            new Dictionary<string, string>
+                            {
+                                ["query"] = "AgentOrchestrator",
+                                ["path"] = "."
+                            })
+                    },
+                    ResponseId: "resp-search-2"),
+                3 => BuildFinalResponseAfterDuplicatePrevention(request, "call-search-2"),
+                _ => throw new InvalidOperationException("Unexpected model invocation.")
+            };
+        });
+
+        var orchestrator = new AgentOrchestrator(
+            _ => new ITool[] { searchTool },
+            modelClient,
+            new AgentOrchestratorOptions { MaxIterations = 4 });
+
+        var response = await orchestrator.ProcessAsync(
+            new AgentRequest("Find AgentOrchestrator", workspace.RootPath));
+
+        TestAssert.True(response.Success, "The orchestrator should succeed after blocking the duplicate.");
+        TestAssert.Equal(1, searchTool.ExecutionCount);
+        TestAssert.Contains("existing evidence", response.Output);
+        TestAssert.True(
+            response.ExecutionSteps?.Any(step => step.Description.Contains("Prevented duplicate tool call", StringComparison.Ordinal)) == true,
+            "A duplicate prevention step should be recorded.");
+    }
+
+    public static async Task AgentOrchestratorContinuesAfterDuplicateSearchPreventionAsync()
+    {
+        using var workspace = new TestWorkspace();
+        var searchTool = new CountingTool(
+            "search_files",
+            "Searches files.",
+            new Dictionary<string, string>
+            {
+                ["query"] = "Query text.",
+                ["path"] = "Search path."
+            },
+            arguments => new ToolExecutionResult(
+                "search_files",
+                true,
+                $$"""{"Matches":["{{arguments["path"]}}/ProjectLens.Application/AgentOrchestrator.cs"]}"""));
+        var readTool = new CountingTool(
+            "read_file",
+            "Reads a file.",
+            new Dictionary<string, string>
+            {
+                ["path"] = "File path."
+            },
+            _ => new ToolExecutionResult(
+                "read_file",
+                true,
+                """{"Path":"ProjectLens.Application/AgentOrchestrator.cs","Content":"public sealed class AgentOrchestrator {}","IsTruncated":false,"CharacterCount":40}"""));
+
+        var callCount = 0;
+        var modelClient = new ScriptedModelClient(request =>
+        {
+            callCount++;
+            return callCount switch
+            {
+                1 => new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-search-1",
+                            "search_files",
+                            new Dictionary<string, string>
+                            {
+                                ["query"] = "AgentOrchestrator",
+                                ["path"] = "."
+                            })
+                    },
+                    ResponseId: "resp-dup-1"),
+                2 => new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-search-2",
+                            "search_files",
+                            new Dictionary<string, string>
+                            {
+                                ["query"] = "AgentOrchestrator",
+                                ["path"] = "."
+                            })
+                    },
+                    ResponseId: "resp-dup-2"),
+                3 => BuildReadRequestAfterDuplicate(request, "call-search-2"),
+                4 => BuildFinalAnswerAfterRead(request, "call-read-1"),
+                _ => throw new InvalidOperationException("Unexpected model invocation.")
+            };
+        });
+
+        var orchestrator = new AgentOrchestrator(
+            _ => new ITool[] { searchTool, readTool },
+            modelClient,
+            new AgentOrchestratorOptions { MaxIterations = 6 });
+
+        var response = await orchestrator.ProcessAsync(
+            new AgentRequest("Explain AgentOrchestrator", workspace.RootPath));
+
+        TestAssert.True(response.Success, "The orchestrator should recover after duplicate prevention.");
+        TestAssert.Equal(1, searchTool.ExecutionCount);
+        TestAssert.Equal(1, readTool.ExecutionCount);
+        TestAssert.Contains("AgentOrchestrator", response.Output);
     }
 
     public static async Task AgentOrchestratorHandlesSingleToolCallAsync()
@@ -502,7 +699,8 @@ internal static class ToolTests
                             "call-readme",
                             "read_file",
                             new Dictionary<string, string> { ["path"] = "README.md" })
-                    }),
+                    },
+                    ResponseId: "resp-readme"),
                 2 => BuildFinalResponseAfterTool(
                     request,
                     "call-readme",
@@ -552,7 +750,8 @@ internal static class ToolTests
                             "call-project",
                             "read_file",
                             new Dictionary<string, string> { ["path"] = "ProjectLens.Host.csproj" })
-                    }),
+                    },
+                    ResponseId: "resp-multi"),
                 2 => BuildFinalResponseAfterMultipleTools(request),
                 _ => throw new InvalidOperationException("Unexpected model invocation.")
             };
@@ -580,7 +779,8 @@ internal static class ToolTests
                     Guid.NewGuid().ToString("N"),
                     "read_file",
                     new Dictionary<string, string> { ["path"] = "README.md" })
-            }));
+            },
+            ResponseId: "resp-loop"));
 
         var orchestrator = CreateOrchestrator(
             workspace.RootPath,
@@ -592,7 +792,7 @@ internal static class ToolTests
 
         TestAssert.False(response.Success, "The orchestrator should stop when max iterations is reached.");
         TestAssert.Contains("maximum of 2 iterations", response.ErrorMessage);
-        TestAssert.Equal(2, response.ToolResults?.Count ?? 0);
+        TestAssert.Equal(1, response.ToolResults?.Count ?? 0);
     }
 
     private static AgentOrchestrator CreateOrchestrator(
@@ -614,13 +814,14 @@ internal static class ToolTests
     private static ModelResponse BuildFinalResponseAfterTool(
         ModelRequest request,
         string callId,
-        string expectedSnippet)
+        string expectedSnippet,
+        string? responseId = null)
     {
         var toolMessage = request.Conversation.OfType<ModelToolResultMessage>().Single();
         TestAssert.Equal(callId, toolMessage.CallId);
         TestAssert.Contains(expectedSnippet, toolMessage.Output);
 
-        return new ModelResponse($"Grounded final answer: {expectedSnippet}");
+        return new ModelResponse($"Grounded final answer: {expectedSnippet}", ResponseId: responseId);
     }
 
     private static ModelResponse BuildFinalResponseAfterMultipleTools(ModelRequest request)
@@ -634,7 +835,53 @@ internal static class ToolTests
             toolMessages.Any(message => message.CallId == "call-project" && message.Output.Contains("TargetFramework", StringComparison.Ordinal)),
             "The project file tool output should be present.");
 
-        return new ModelResponse("Grounded final answer: Repository overview. TargetFramework net8.0.");
+        return new ModelResponse("Grounded final answer: Repository overview. TargetFramework net8.0.", ResponseId: "resp-final");
+    }
+
+    private static ModelResponse BuildFinalResponseAfterDuplicatePrevention(ModelRequest request, string duplicateCallId)
+    {
+        var duplicateMessage = request.Conversation
+            .OfType<ModelToolResultMessage>()
+            .Single(message => message.CallId == duplicateCallId);
+
+        TestAssert.Contains("already executed earlier", duplicateMessage.Output);
+
+        return new ModelResponse(
+            "Grounded final answer: use the existing evidence instead of repeating the same search.",
+            ResponseId: "resp-after-duplicate");
+    }
+
+    private static ModelResponse BuildReadRequestAfterDuplicate(ModelRequest request, string duplicateCallId)
+    {
+        var toolMessages = request.Conversation.OfType<ModelToolResultMessage>().ToArray();
+        TestAssert.True(toolMessages.Any(message => message.CallId == duplicateCallId && message.Output.Contains("already executed earlier", StringComparison.Ordinal)),
+            "The duplicate prevention message should be present.");
+
+        return new ModelResponse(
+            ToolCalls: new[]
+            {
+                new ModelToolCall(
+                    "call-read-1",
+                    "read_file",
+                    new Dictionary<string, string>
+                    {
+                        ["path"] = "ProjectLens.Application/AgentOrchestrator.cs"
+                    })
+            },
+            ResponseId: "resp-read-next");
+    }
+
+    private static ModelResponse BuildFinalAnswerAfterRead(ModelRequest request, string readCallId)
+    {
+        var readMessage = request.Conversation
+            .OfType<ModelToolResultMessage>()
+            .Single(message => message.CallId == readCallId);
+
+        TestAssert.Contains("AgentOrchestrator", readMessage.Output);
+
+        return new ModelResponse(
+            "Grounded final answer: AgentOrchestrator is implemented in ProjectLens.Application/AgentOrchestrator.cs.",
+            ResponseId: "resp-after-read");
     }
 
     private static T Deserialize<T>(string? json)
@@ -678,6 +925,33 @@ internal sealed class ScriptedModelClient : IModelClient
         var response = _responses[responseIndex](request);
         _index++;
         return Task.FromResult(response);
+    }
+}
+
+internal sealed class CountingTool : ITool
+{
+    private readonly Func<IReadOnlyDictionary<string, string>, ToolExecutionResult> _handler;
+
+    public CountingTool(
+        string name,
+        string description,
+        IReadOnlyDictionary<string, string>? parameters,
+        Func<IReadOnlyDictionary<string, string>, ToolExecutionResult> handler)
+    {
+        Definition = new ToolDefinition(name, description, parameters);
+        _handler = handler;
+    }
+
+    public ToolDefinition Definition { get; }
+
+    public int ExecutionCount { get; private set; }
+
+    public Task<ToolExecutionResult> ExecuteAsync(
+        IReadOnlyDictionary<string, string> arguments,
+        CancellationToken cancellationToken = default)
+    {
+        ExecutionCount++;
+        return Task.FromResult(_handler(arguments));
     }
 }
 
@@ -766,6 +1040,14 @@ internal static class TestAssert
                 throw new InvalidOperationException(
                     $"Expected '{expectedEnumerator.Current}', but got '{actualEnumerator.Current}'.");
             }
+        }
+    }
+
+    public static void Null(object? value)
+    {
+        if (value is not null)
+        {
+            throw new InvalidOperationException($"Expected null, but got '{value}'.");
         }
     }
 

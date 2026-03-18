@@ -42,20 +42,26 @@ public sealed class OpenAiModelClient : IModelClient
             instructions = request.Instructions,
             input = BuildInput(request.Conversation),
             tools = BuildTools(request.AvailableTools),
-            store = false
+            previous_response_id = string.IsNullOrWhiteSpace(request.PreviousResponseId)
+                ? null
+                : request.PreviousResponseId,
+            store = true
         };
 
         using var message = new HttpRequestMessage(HttpMethod.Post, "responses")
         {
             Content = new StringContent(
-                JsonSerializer.Serialize(payload, SerializerOptions),
+                SerializePayload(payload),
                 Encoding.UTF8,
                 "application/json")
         };
 
         using var response = await _httpClient.SendAsync(message, cancellationToken);
         var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
-        response.EnsureSuccessStatusCode();
+        if (!response.IsSuccessStatusCode)
+        {
+            throw BuildApiFailure(response.StatusCode, response.ReasonPhrase, responseBody);
+        }
 
         return ParseResponse(responseBody);
     }
@@ -96,26 +102,38 @@ public sealed class OpenAiModelClient : IModelClient
                 type = "function",
                 name = tool.Name,
                 description = tool.Description,
-                parameters = new
-                {
-                    type = "object",
-                    properties = (tool.Parameters ?? new Dictionary<string, string>())
-                        .ToDictionary(
-                            parameter => parameter.Key,
-                            parameter => (object)new
-                            {
-                                type = "string",
-                                description = parameter.Value
-                            })
-                }
+                strict = true,
+                parameters = BuildToolParameters(tool.Parameters)
             })
             .ToArray();
+    }
+
+    private static object BuildToolParameters(IReadOnlyDictionary<string, string>? parameters)
+    {
+        var toolParameters = parameters ?? new Dictionary<string, string>();
+
+        return new
+        {
+            type = "object",
+            properties = toolParameters.ToDictionary(
+                parameter => parameter.Key,
+                parameter => (object)new
+                {
+                    type = "string",
+                    description = parameter.Value
+                }),
+            required = toolParameters.Keys.ToArray(),
+            additionalProperties = false
+        };
     }
 
     private static ModelResponse ParseResponse(string responseBody)
     {
         using var document = JsonDocument.Parse(responseBody);
         var root = document.RootElement;
+        var responseId = root.TryGetProperty("id", out var idElement) && idElement.ValueKind == JsonValueKind.String
+            ? idElement.GetString()
+            : null;
 
         var toolCalls = new List<ModelToolCall>();
         var finalAnswerParts = new List<string>();
@@ -156,7 +174,7 @@ public sealed class OpenAiModelClient : IModelClient
             ? null
             : string.Join(Environment.NewLine, finalAnswerParts.Where(part => !string.IsNullOrWhiteSpace(part)));
 
-        return new ModelResponse(finalAnswer, toolCalls);
+        return new ModelResponse(finalAnswer, toolCalls, responseId);
     }
 
     private static IEnumerable<string> ParseMessageText(JsonElement messageElement)
@@ -240,5 +258,25 @@ public sealed class OpenAiModelClient : IModelClient
         return candidate.EndsWith("/", StringComparison.Ordinal)
             ? candidate
             : candidate + "/";
+    }
+
+    private static InvalidOperationException BuildApiFailure(
+        System.Net.HttpStatusCode statusCode,
+        string? reasonPhrase,
+        string responseBody)
+    {
+        var reason = string.IsNullOrWhiteSpace(reasonPhrase)
+            ? string.Empty
+            : $" {reasonPhrase}";
+
+        return new InvalidOperationException(
+            $"OpenAI Responses API request failed with status {(int)statusCode}{reason}.{Environment.NewLine}" +
+            $"Response body:{Environment.NewLine}{responseBody}");
+    }
+
+    private static string SerializePayload(object payload)
+    {
+        // Helpful during local debugging: inspect this JSON in a debugger before the request is sent.
+        return JsonSerializer.Serialize(payload, SerializerOptions);
     }
 }

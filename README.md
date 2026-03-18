@@ -163,7 +163,7 @@ Update `ProjectLens.Host/appsettings.json`:
     "ApiKey": "YOUR_API_KEY",
     "Model": "gpt-4.1-mini",
     "BaseUrl": "https://api.openai.com/v1/",
-    "MaxIterations": 5
+    "MaxIterations": 8
   }
 }
 ```
