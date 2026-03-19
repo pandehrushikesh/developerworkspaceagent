@@ -14,6 +14,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
     private const string SessionIdContextKey = "sessionId";
 
     private readonly IFileCompressor? _fileCompressor;
+    private readonly IEvidenceQualityEvaluator? _evidenceQualityEvaluator;
     private readonly IModelClient? _modelClient;
     private readonly AgentOrchestratorOptions _options;
     private readonly IAgentSessionStore? _sessionStore;
@@ -26,8 +27,9 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         AgentOrchestratorOptions? options = null,
         IAgentSessionStore? sessionStore = null,
         IFileCompressor? fileCompressor = null,
-        ISessionSummarizer? sessionSummarizer = null)
-        : this(_ => tools, modelClient, options, sessionStore, fileCompressor, sessionSummarizer)
+        ISessionSummarizer? sessionSummarizer = null,
+        IEvidenceQualityEvaluator? evidenceQualityEvaluator = null)
+        : this(_ => tools, modelClient, options, sessionStore, fileCompressor, sessionSummarizer, evidenceQualityEvaluator)
     {
     }
 
@@ -37,10 +39,12 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         AgentOrchestratorOptions? options = null,
         IAgentSessionStore? sessionStore = null,
         IFileCompressor? fileCompressor = null,
-        ISessionSummarizer? sessionSummarizer = null)
+        ISessionSummarizer? sessionSummarizer = null,
+        IEvidenceQualityEvaluator? evidenceQualityEvaluator = null)
     {
         ArgumentNullException.ThrowIfNull(toolFactory);
 
+        _evidenceQualityEvaluator = evidenceQualityEvaluator;
         _fileCompressor = fileCompressor;
         _modelClient = modelClient;
         _options = options ?? new AgentOrchestratorOptions();
@@ -105,6 +109,8 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             new ModelTextMessage("user", request.UserPrompt)
         };
         var executedToolCalls = new HashSet<string>(StringComparer.Ordinal);
+        var hasPendingWeakSearchEvidence = false;
+        string? weakSearchRecoveryGuidance = null;
         string? previousResponseId = null;
 
         for (var iteration = 1; iteration <= _options.MaxIterations; iteration++)
@@ -129,6 +135,19 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
 
             if (!string.IsNullOrWhiteSpace(modelResponse.FinalAnswer) && toolCalls.Length == 0)
             {
+                if (hasPendingWeakSearchEvidence)
+                {
+                    steps.Add(new AgentExecutionStep(
+                        "Model attempted to finalize after weak search evidence; requesting broader recovery instead.",
+                        false));
+
+                    conversation.Add(new ModelTextMessage(
+                        "user",
+                        BuildWeakSearchRecoveryPrompt(weakSearchRecoveryGuidance)));
+
+                    continue;
+                }
+
                 steps.Add(new AgentExecutionStep($"Model returned a final answer on iteration {iteration}."));
                 return new AgentResponse(modelResponse.FinalAnswer, steps, toolResults);
             }
@@ -177,6 +196,16 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
                 var output = executionResult.Success
                     ? CreateToolContextOutput(toolCall.ToolName, executionResult.Output, request.UserPrompt)
                     : executionResult.ErrorMessage ?? "Tool execution failed.";
+
+                if (executionResult.Success)
+                {
+                    UpdateWeakSearchState(
+                        toolCall.ToolName,
+                        executionResult.Output,
+                        request.UserPrompt,
+                        ref hasPendingWeakSearchEvidence,
+                        ref weakSearchRecoveryGuidance);
+                }
 
                 conversation.Add(new ModelToolResultMessage(toolCall.CallId, toolCall.ToolName, output));
 
@@ -330,8 +359,13 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
 
         var updatedVisitedFiles = UpdateRecentUniqueList(
             sessionState.VisitedFiles,
-            ExtractVisitedFiles(toolName, rawToolOutput),
+            ExtractVisitedFiles(toolName, rawToolOutput, _evidenceQualityEvaluator),
             20);
+
+        if (_evidenceQualityEvaluator is not null)
+        {
+            updatedVisitedFiles = _evidenceQualityEvaluator.SelectPathsForSessionMemory(updatedVisitedFiles, 20);
+        }
 
         var updatedHistory = sessionState.RecentToolHistory
             .Concat([CreateToolHistoryEntry(toolName, toolOutputForModel)])
@@ -441,6 +475,8 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             Use tool calls only when they materially help answer the user's request.
             Do not repeat the same tool call with the same arguments unless the earlier results were clearly insufficient.
             After search_files returns likely matches, prefer read_file on the most relevant result instead of repeating search_files.
+            If an exact keyword search returns only low-value, generated, config, project, or other non-source matches, treat that as weak evidence rather than enough support for a final logic answer.
+            When search evidence is weak, prefer one bounded recovery step: either broaden the search with related terms (for example unzip -> extract, archive, zip, decompress, unpack) or inspect a likely main source file before answering.
             For follow-up requests about refactoring, improving, or explaining logic you already inspected, use the existing session context and prior file summaries first.
             If the session already identifies a likely file or flow, propose the best grounded answer or refactor direction you can before requesting more tool calls.
             For refactor, design, or code-improvement prompts, clearly separate observed facts from inferred recommendations.
@@ -517,13 +553,16 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
 
         if (string.Equals(toolName, SearchFilesToolName, StringComparison.OrdinalIgnoreCase))
         {
-            return SummarizeSearchResults(rawToolOutput);
+            return SummarizeSearchResults(rawToolOutput, userPrompt, _evidenceQualityEvaluator);
         }
 
         return rawToolOutput;
     }
 
-    private static string SummarizeSearchResults(string rawToolOutput)
+    private static string SummarizeSearchResults(
+        string rawToolOutput,
+        string userPrompt,
+        IEvidenceQualityEvaluator? evidenceQualityEvaluator)
     {
         try
         {
@@ -533,29 +572,32 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             var totalMatches = root.TryGetProperty("TotalMatches", out var totalMatchesElement)
                 ? totalMatchesElement.GetInt32()
                 : 0;
-            var matchLines = root.TryGetProperty("Matches", out var matchesElement)
+            var matches = root.TryGetProperty("Matches", out var matchesElement)
                 ? matchesElement.EnumerateArray()
-                    .Take(5)
-                    .Select(match =>
-                    {
-                        var path = match.TryGetProperty("Path", out var pathElement) ? pathElement.GetString() : null;
-                        var snippet = match.TryGetProperty("Snippet", out var snippetElement) ? snippetElement.GetString() : null;
-                        return string.IsNullOrWhiteSpace(path)
-                            ? null
-                            : $"{path}: {snippet}";
-                    })
-                    .Where(line => !string.IsNullOrWhiteSpace(line))
+                    .Select(match => new EvidenceMatch(
+                        match.TryGetProperty("Path", out var pathElement) ? pathElement.GetString() ?? string.Empty : string.Empty,
+                        match.TryGetProperty("Snippet", out var snippetElement) ? snippetElement.GetString() ?? string.Empty : string.Empty,
+                        match.TryGetProperty("LineNumber", out var lineNumberElement) ? lineNumberElement.GetInt32() : 0))
+                    .Where(match => !string.IsNullOrWhiteSpace(match.Path))
                     .ToArray()
-                : Array.Empty<string>();
+                : Array.Empty<EvidenceMatch>();
+            var searchEvidence = evidenceQualityEvaluator is null
+                ? new SearchEvidenceAssessment(matches.Take(5).ToArray(), false, matches.Any(), string.Empty)
+                : evidenceQualityEvaluator.AssessSearchEvidence(matches, query ?? userPrompt, 5);
 
             var builder = new StringBuilder();
             builder.AppendLine($"search_files query: {query}");
             builder.AppendLine($"Total matches: {totalMatches}");
             builder.AppendLine("Evidence basis: search_files returns filename matches and snippets only; file contents have not been fully read yet.");
 
-            foreach (var matchLine in matchLines)
+            if (searchEvidence.IsWeakEvidence)
             {
-                builder.AppendLine($"- {matchLine}");
+                builder.AppendLine(searchEvidence.RecoveryGuidance);
+            }
+
+            foreach (var match in searchEvidence.RankedMatches)
+            {
+                builder.AppendLine($"- {match.Path}: {match.Snippet}");
             }
 
             return builder.ToString().TrimEnd();
@@ -596,7 +638,10 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         }
     }
 
-    private static IReadOnlyCollection<string> ExtractVisitedFiles(string toolName, string? rawToolOutput)
+    private static IReadOnlyCollection<string> ExtractVisitedFiles(
+        string toolName,
+        string? rawToolOutput,
+        IEvidenceQualityEvaluator? evidenceQualityEvaluator)
     {
         if (string.IsNullOrWhiteSpace(rawToolOutput))
         {
@@ -616,19 +661,34 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
 
                 return string.IsNullOrWhiteSpace(path)
                     ? Array.Empty<string>()
-                    : [path];
+                    : evidenceQualityEvaluator is null
+                        ? [path]
+                        : evidenceQualityEvaluator.SelectPathsForSessionMemory([path], 1);
             }
 
             if (string.Equals(toolName, SearchFilesToolName, StringComparison.OrdinalIgnoreCase) &&
                 root.TryGetProperty("Matches", out var matchesElement))
             {
-                return matchesElement
+                var matches = matchesElement
                     .EnumerateArray()
-                    .Take(5)
-                    .Select(match => match.TryGetProperty("Path", out var pathElement) ? pathElement.GetString() : null)
-                    .Where(path => !string.IsNullOrWhiteSpace(path))
-                    .Cast<string>()
+                    .Select(match => new EvidenceMatch(
+                        match.TryGetProperty("Path", out var pathElement) ? pathElement.GetString() ?? string.Empty : string.Empty,
+                        match.TryGetProperty("Snippet", out var snippetElement) ? snippetElement.GetString() ?? string.Empty : string.Empty,
+                        match.TryGetProperty("LineNumber", out var lineNumberElement) ? lineNumberElement.GetInt32() : 0))
+                    .Where(match => !string.IsNullOrWhiteSpace(match.Path))
                     .ToArray();
+
+                if (evidenceQualityEvaluator is null)
+                {
+                    return matches.Take(5).Select(match => match.Path).ToArray();
+                }
+
+                var query = root.TryGetProperty("Query", out var queryElement) ? queryElement.GetString() : null;
+                var rankedPaths = evidenceQualityEvaluator
+                    .RankMatches(matches, query, 5)
+                    .Select(match => match.Path);
+
+                return evidenceQualityEvaluator.SelectPathsForSessionMemory(rankedPaths, 5);
             }
         }
         catch
@@ -715,6 +775,75 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
                 StringComparer.OrdinalIgnoreCase);
 
         return $"{toolCall.ToolName.Trim().ToLowerInvariant()}:{JsonSerializer.Serialize(normalizedArguments)}";
+    }
+
+    private void UpdateWeakSearchState(
+        string toolName,
+        string? rawToolOutput,
+        string userPrompt,
+        ref bool hasPendingWeakSearchEvidence,
+        ref string? weakSearchRecoveryGuidance)
+    {
+        if (string.Equals(toolName, SearchFilesToolName, StringComparison.OrdinalIgnoreCase))
+        {
+            var searchEvidence = AnalyzeSearchEvidence(rawToolOutput, userPrompt, _evidenceQualityEvaluator);
+            hasPendingWeakSearchEvidence = searchEvidence?.IsWeakEvidence == true;
+            weakSearchRecoveryGuidance = searchEvidence?.RecoveryGuidance;
+            return;
+        }
+
+        if (string.Equals(toolName, ReadFileToolName, StringComparison.OrdinalIgnoreCase) &&
+            _evidenceQualityEvaluator is not null &&
+            TryParseReadFilePayload(rawToolOutput ?? string.Empty, out var path, out _, out _, out _) &&
+            _evidenceQualityEvaluator.IsMeaningfulSourcePath(path))
+        {
+            hasPendingWeakSearchEvidence = false;
+            weakSearchRecoveryGuidance = null;
+        }
+    }
+
+    private static SearchEvidenceAssessment? AnalyzeSearchEvidence(
+        string? rawToolOutput,
+        string userPrompt,
+        IEvidenceQualityEvaluator? evidenceQualityEvaluator)
+    {
+        if (string.IsNullOrWhiteSpace(rawToolOutput))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(rawToolOutput);
+            var root = document.RootElement;
+            var matches = root.TryGetProperty("Matches", out var matchesElement)
+                ? matchesElement.EnumerateArray()
+                    .Select(match => new EvidenceMatch(
+                        match.TryGetProperty("Path", out var pathElement) ? pathElement.GetString() ?? string.Empty : string.Empty,
+                        match.TryGetProperty("Snippet", out var snippetElement) ? snippetElement.GetString() ?? string.Empty : string.Empty,
+                        match.TryGetProperty("LineNumber", out var lineNumberElement) ? lineNumberElement.GetInt32() : 0))
+                    .Where(match => !string.IsNullOrWhiteSpace(match.Path))
+                    .ToArray()
+                : Array.Empty<EvidenceMatch>();
+            var query = root.TryGetProperty("Query", out var queryElement) ? queryElement.GetString() : null;
+
+            return evidenceQualityEvaluator is null
+                ? new SearchEvidenceAssessment(matches.Take(5).ToArray(), false, matches.Any(), string.Empty)
+                : evidenceQualityEvaluator.AssessSearchEvidence(matches, query ?? userPrompt, 5);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string BuildWeakSearchRecoveryPrompt(string? recoveryGuidance = null)
+    {
+        var guidance = string.IsNullOrWhiteSpace(recoveryGuidance)
+            ? "Prefer one bounded recovery step: broaden the search with related implementation terms or inspect a likely main source file before answering."
+            : recoveryGuidance.Trim();
+
+        return $"The previous exact keyword search was weak evidence for a logic explanation. Do not finalize yet. {guidance}";
     }
 
     private async Task<ToolExecutionResult> ExecuteToolCallAsync(

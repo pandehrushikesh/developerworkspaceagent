@@ -1,5 +1,6 @@
 using System.IO.Enumeration;
 using System.Text;
+using ProjectLens.Application.Abstractions;
 using ProjectLens.Domain;
 using ProjectLens.Infrastructure.Tools.Models;
 
@@ -9,10 +10,14 @@ public sealed class SearchFilesTool : ITool
 {
     private const int MaxSnippetLength = 160;
 
+    private readonly IEvidenceQualityEvaluator _evidenceQualityEvaluator;
     private readonly WorkspacePathResolver _pathResolver;
 
-    public SearchFilesTool(string workspaceRoot)
+    public SearchFilesTool(
+        string workspaceRoot,
+        IEvidenceQualityEvaluator? evidenceQualityEvaluator = null)
     {
+        _evidenceQualityEvaluator = evidenceQualityEvaluator ?? new RuleBasedEvidenceQualityEvaluator();
         _pathResolver = new WorkspacePathResolver(workspaceRoot);
     }
 
@@ -36,13 +41,14 @@ public sealed class SearchFilesTool : ITool
         {
             var request = ParseRequest(arguments);
             var targetPath = _pathResolver.ResolvePath(request.Path);
+            var maxCandidateResults = Math.Max(request.MaxResults * 5, 50);
 
             if (!File.Exists(targetPath) && !Directory.Exists(targetPath))
             {
                 return ToolResultFactory.Failure(Definition.Name, "The requested path does not exist.");
             }
 
-            var matches = new List<SearchFileMatch>(request.MaxResults);
+            var matches = new List<SearchFileMatch>(request.MaxResults * 2);
             var comparison = request.CaseSensitive
                 ? StringComparison.Ordinal
                 : StringComparison.OrdinalIgnoreCase;
@@ -56,13 +62,17 @@ public sealed class SearchFilesTool : ITool
                     continue;
                 }
 
-                await CollectMatchesAsync(filePath, request, comparison, matches, cancellationToken);
+                await CollectMatchesAsync(filePath, request, comparison, matches, maxCandidateResults, cancellationToken);
 
-                if (matches.Count >= request.MaxResults)
-                {
-                    break;
-                }
             }
+
+            var rankedMatches = _evidenceQualityEvaluator
+                .RankMatches(
+                    matches.Select(match => new EvidenceMatch(match.Path, match.Snippet, match.LineNumber)),
+                    request.Query,
+                    request.MaxResults)
+                .Select(match => new SearchFileMatch(match.Path, match.LineNumber, match.Snippet))
+                .ToArray();
 
             var response = new SearchFilesResponse(
                 _pathResolver.ToRelativePath(targetPath),
@@ -70,8 +80,8 @@ public sealed class SearchFilesTool : ITool
                 request.FilePattern,
                 request.CaseSensitive,
                 request.MaxResults,
-                matches.Count,
-                matches);
+                rankedMatches.Length,
+                rankedMatches);
 
             return ToolResultFactory.Success(Definition.Name, response);
         }
@@ -144,13 +154,14 @@ public sealed class SearchFilesTool : ITool
         SearchFilesRequest request,
         StringComparison comparison,
         List<SearchFileMatch> matches,
+        int maxCandidateResults,
         CancellationToken cancellationToken)
     {
         await using var stream = File.OpenRead(filePath);
         using var reader = new StreamReader(stream, Encoding.UTF8, true);
 
         var lineNumber = 0;
-        while (!reader.EndOfStream && matches.Count < request.MaxResults)
+        while (!reader.EndOfStream && matches.Count < maxCandidateResults)
         {
             cancellationToken.ThrowIfCancellationRequested();
 

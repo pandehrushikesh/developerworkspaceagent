@@ -6,20 +6,27 @@ namespace ProjectLens.Infrastructure;
 
 public sealed class RuleBasedSessionSummarizer : ISessionSummarizer
 {
+    private readonly IEvidenceQualityEvaluator _evidenceQualityEvaluator;
+
+    public RuleBasedSessionSummarizer(IEvidenceQualityEvaluator? evidenceQualityEvaluator = null)
+    {
+        _evidenceQualityEvaluator = evidenceQualityEvaluator ?? new RuleBasedEvidenceQualityEvaluator();
+    }
+
     public string UpdateSummary(
         AgentSessionState sessionState,
         string toolName,
         string toolOutput)
     {
         var builder = new StringBuilder();
-        var findings = ExtractFindings(toolName, toolOutput);
+        var findings = ExtractFindings(toolName, toolOutput, _evidenceQualityEvaluator);
 
         if (!string.IsNullOrWhiteSpace(sessionState.WorkingSummary))
         {
             builder.AppendLine(sessionState.WorkingSummary.Trim());
         }
 
-        builder.AppendLine($"Latest {toolName}: {CreateSnippet(toolOutput)}");
+        builder.AppendLine($"Latest {toolName}: {DescribeLatestEvidence(toolName, toolOutput, sessionState)}");
 
         if (findings.MainFlowFiles.Count > 0)
         {
@@ -41,10 +48,11 @@ public sealed class RuleBasedSessionSummarizer : ISessionSummarizer
             builder.AppendLine($"Evidence limitations: {string.Join(" | ", findings.EvidenceLimitations)}");
         }
 
-        if (sessionState.VisitedFiles.Count > 0)
+        var curatedVisitedFiles = _evidenceQualityEvaluator.SelectPathsForSessionMemory(sessionState.VisitedFiles, 8);
+        if (curatedVisitedFiles.Count > 0)
         {
             builder.AppendLine(
-                $"Visited files: {string.Join(", ", sessionState.VisitedFiles.Take(8))}");
+                $"Visited files: {string.Join(", ", curatedVisitedFiles)}");
         }
 
         if (sessionState.RecentToolHistory.Count > 0)
@@ -75,12 +83,31 @@ public sealed class RuleBasedSessionSummarizer : ISessionSummarizer
         return value[..(maxLength - 3)].TrimEnd() + "...";
     }
 
-    private static SessionFindings ExtractFindings(string toolName, string toolOutput)
+    private string DescribeLatestEvidence(
+        string toolName,
+        string toolOutput,
+        AgentSessionState sessionState)
+    {
+        var findings = ExtractFindings(toolName, toolOutput, _evidenceQualityEvaluator);
+        if (findings.FoundLowValueEvidence &&
+            sessionState.VisitedFiles.Any(path => !_evidenceQualityEvaluator.IsLowValuePath(path)))
+        {
+            return $"low-value/generated artifact inspected; higher-signal files remain the preferred evidence base. Evidence basis: {CreateSnippet(toolOutput)}";
+        }
+
+        return CreateSnippet(toolOutput);
+    }
+
+    private static SessionFindings ExtractFindings(
+        string toolName,
+        string toolOutput,
+        IEvidenceQualityEvaluator evidenceQualityEvaluator)
     {
         var files = new List<string>();
         var symbols = new List<string>();
         var operations = new List<string>();
         var limitations = new List<string>();
+        var foundLowValueEvidence = false;
 
         foreach (var rawLine in toolOutput.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
@@ -88,7 +115,9 @@ public sealed class RuleBasedSessionSummarizer : ISessionSummarizer
 
             if (line.StartsWith("File: ", StringComparison.Ordinal))
             {
-                files.Add(line["File: ".Length..]);
+                var path = line["File: ".Length..];
+                files.Add(path);
+                foundLowValueEvidence |= evidenceQualityEvaluator.IsLowValuePath(path);
                 continue;
             }
 
@@ -112,6 +141,12 @@ public sealed class RuleBasedSessionSummarizer : ISessionSummarizer
 
             if (line.StartsWith("- ", StringComparison.Ordinal))
             {
+                if (TryExtractSearchMatchPath(line[2..], out var path))
+                {
+                    files.Add(path);
+                    foundLowValueEvidence |= evidenceQualityEvaluator.IsLowValuePath(path);
+                }
+
                 operations.Add(CreateSnippet(line[2..]));
                 continue;
             }
@@ -129,16 +164,39 @@ public sealed class RuleBasedSessionSummarizer : ISessionSummarizer
             }
         }
 
+        var rankedFiles = evidenceQualityEvaluator
+            .RankMatches(
+                files.Select(path => new EvidenceMatch(path, string.Empty)),
+                userPrompt: null,
+                maxResults: 4)
+            .Select(match => match.Path)
+            .ToArray();
+
         return new SessionFindings(
-            files.Distinct(StringComparer.OrdinalIgnoreCase).Take(4).ToArray(),
+            rankedFiles,
             symbols.Distinct(StringComparer.Ordinal).Take(8).ToArray(),
             operations.Distinct(StringComparer.Ordinal).Take(8).ToArray(),
-            limitations.Distinct(StringComparer.Ordinal).Take(3).ToArray());
+            limitations.Distinct(StringComparer.Ordinal).Take(3).ToArray(),
+            foundLowValueEvidence);
+    }
+
+    private static bool TryExtractSearchMatchPath(string value, out string path)
+    {
+        var separatorIndex = value.IndexOf(':');
+        if (separatorIndex <= 0)
+        {
+            path = string.Empty;
+            return false;
+        }
+
+        path = value[..separatorIndex].Trim();
+        return !string.IsNullOrWhiteSpace(path);
     }
 
     private sealed record SessionFindings(
         IReadOnlyCollection<string> MainFlowFiles,
         IReadOnlyCollection<string> ImportantSymbols,
         IReadOnlyCollection<string> ObservedOperations,
-        IReadOnlyCollection<string> EvidenceLimitations);
+        IReadOnlyCollection<string> EvidenceLimitations,
+        bool FoundLowValueEvidence);
 }
