@@ -28,6 +28,9 @@ internal static class Program
             ("SearchFilesTool honors case sensitivity", ToolTests.SearchFilesToolHonorsCaseSensitivityAsync),
             ("SearchFilesTool skips binary files", ToolTests.SearchFilesToolSkipsBinaryFilesAsync),
             ("SearchFilesTool returns stable readable snippets", ToolTests.SearchFilesToolReturnsReadableSnippetsAsync),
+            ("Evidence evaluator penalizes low-value paths", ToolTests.EvidenceEvaluatorPenalizesLowValuePathsAsync),
+            ("Evidence evaluator detects weak exact-match evidence", ToolTests.EvidenceEvaluatorDetectsWeakExactMatchEvidenceAsync),
+            ("SearchFilesTool ranks source files above generated artifacts", ToolTests.SearchFilesToolRanksSourceFilesAboveGeneratedArtifactsAsync),
             ("InMemoryAgentSessionStore saves and loads state", ToolTests.InMemoryAgentSessionStoreSavesAndLoadsStateAsync),
             ("FileBasedAgentSessionStore saves and reloads state across instances", ToolTests.FileBasedAgentSessionStoreSavesAndReloadsStateAcrossInstancesAsync),
             ("FileBasedAgentSessionStore returns null for missing sessions", ToolTests.FileBasedAgentSessionStoreReturnsNullForMissingSessionAsync),
@@ -35,6 +38,7 @@ internal static class Program
             ("FileBasedAgentSessionStore round-trips path-like session ids", ToolTests.FileBasedAgentSessionStoreRoundTripsPathLikeSessionIdsAsync),
             ("RuleBasedFileCompressor preserves actionable structure", ToolTests.RuleBasedFileCompressorPreservesActionableStructureAsync),
             ("RuleBasedSessionSummarizer retains actionable findings", ToolTests.RuleBasedSessionSummarizerRetainsActionableFindingsAsync),
+            ("RuleBasedSessionSummarizer excludes noisy artifact-heavy evidence", ToolTests.RuleBasedSessionSummarizerExcludesNoisyArtifactHeavyEvidenceAsync),
             ("AgentOrchestrator summarizes README and project file", ToolTests.AgentOrchestratorSummarizesWorkspaceAsync),
             ("AgentOrchestrator handles missing optional files", ToolTests.AgentOrchestratorHandlesMissingWorkspaceFilesAsync),
             ("AgentOrchestrator requires registered tools", ToolTests.AgentOrchestratorRequiresRegisteredToolsAsync),
@@ -44,6 +48,8 @@ internal static class Program
             ("AgentOrchestrator uses session context for refactor follow-up", ToolTests.AgentOrchestratorUsesSessionContextForRefactorFollowUpAsync),
             ("AgentOrchestrator persists session state without summarizer", ToolTests.AgentOrchestratorPersistsSessionStateWithoutSummarizerAsync),
             ("AgentOrchestrator refreshes visited file recency", ToolTests.AgentOrchestratorRefreshesVisitedFileRecencyAsync),
+            ("AgentOrchestrator curates low-value search evidence from session memory", ToolTests.AgentOrchestratorCuratesLowValueSearchEvidenceFromSessionMemoryAsync),
+            ("AgentOrchestrator recovers when exact keyword search evidence is weak", ToolTests.AgentOrchestratorRecoversWhenExactKeywordSearchEvidenceIsWeakAsync),
             ("AgentOrchestrator prevents duplicate tool calls", ToolTests.AgentOrchestratorPreventsDuplicateToolCallsAsync),
             ("AgentOrchestrator continues after duplicate search prevention", ToolTests.AgentOrchestratorContinuesAfterDuplicateSearchPreventionAsync),
             ("AgentOrchestrator handles a single tool call", ToolTests.AgentOrchestratorHandlesSingleToolCallAsync),
@@ -420,6 +426,73 @@ internal static class ToolTests
         TestAssert.Contains("prefix", match.Snippet);
     }
 
+    public static Task EvidenceEvaluatorPenalizesLowValuePathsAsync()
+    {
+        IEvidenceQualityEvaluator evaluator = new RuleBasedEvidenceQualityEvaluator();
+
+        TestAssert.True(evaluator.IsLowValuePath("obj/Debug/net8.0/Generated.g.cs"), "obj paths should be treated as low-value.");
+        TestAssert.False(evaluator.IsLowValuePath("src/AgentOrchestrator.cs"), "source files should not be treated as low-value.");
+
+        var generatedScore = evaluator.ScoreFile(
+            "obj/Debug/net8.0/Generated.g.cs",
+            "public class GeneratedArtifacts {}",
+            "Explain the agent orchestrator");
+        var sourceScore = evaluator.ScoreFile(
+            "src/AgentOrchestrator.cs",
+            "public sealed class AgentOrchestrator {}",
+            "Explain the agent orchestrator");
+
+        TestAssert.True(sourceScore > generatedScore, "Source files should score above generated artifacts.");
+        return Task.CompletedTask;
+    }
+
+    public static Task EvidenceEvaluatorDetectsWeakExactMatchEvidenceAsync()
+    {
+        IEvidenceQualityEvaluator evaluator = new RuleBasedEvidenceQualityEvaluator();
+        var assessment = evaluator.AssessSearchEvidence(
+            [
+                new EvidenceMatch(
+                    "obj/Debug/net8.0/ProjectLens.AssemblyInfo.cs",
+                    "internal static class AssemblyInfoMarker {}"),
+                new EvidenceMatch(
+                    "ProjectLens.Host/appsettings.json",
+                    "\"unzip\": true")
+            ],
+            "Search for unzip a file related logic and explain the flow",
+            5);
+
+        TestAssert.True(assessment.IsWeakEvidence, "Low-value and non-source exact matches should be treated as weak evidence.");
+        TestAssert.False(assessment.HasMeaningfulSourceMatch, "Weak exact-match evidence should not report meaningful source coverage.");
+        TestAssert.Contains("Weak evidence:", assessment.RecoveryGuidance);
+        TestAssert.Contains("extract", assessment.RecoveryGuidance);
+        TestAssert.Contains("inspect a likely main source file", assessment.RecoveryGuidance);
+        return Task.CompletedTask;
+    }
+
+    public static async Task SearchFilesToolRanksSourceFilesAboveGeneratedArtifactsAsync()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.WriteText(
+            Path.Combine("obj", "Debug", "net8.0", "ProjectLens.AssemblyInfo.cs"),
+            "internal static class AssemblyInfoMarker { } // agent orchestrator");
+        workspace.WriteText(
+            Path.Combine("src", "AgentOrchestrator.cs"),
+            "public sealed class AgentOrchestrator { } // agent orchestrator");
+
+        var tool = new SearchFilesTool(workspace.RootPath, new RuleBasedEvidenceQualityEvaluator());
+        var result = await tool.ExecuteAsync(new Dictionary<string, string>
+        {
+            ["query"] = "agent orchestrator",
+            ["maxResults"] = "1"
+        });
+
+        TestAssert.True(result.Success, "The tool should succeed.");
+        var response = Deserialize<SearchFilesResponse>(result.Output);
+        var match = response.Matches.Single();
+
+        TestAssert.Equal("src/AgentOrchestrator.cs", match.Path);
+    }
+
     public static async Task InMemoryAgentSessionStoreSavesAndLoadsStateAsync()
     {
         IAgentSessionStore store = new InMemoryAgentSessionStore();
@@ -589,7 +662,7 @@ internal static class ToolTests
 
     public static Task RuleBasedSessionSummarizerRetainsActionableFindingsAsync()
     {
-        ISessionSummarizer summarizer = new RuleBasedSessionSummarizer();
+        ISessionSummarizer summarizer = new RuleBasedSessionSummarizer(new RuleBasedEvidenceQualityEvaluator());
         var sessionState = new AgentSessionState
         {
             SessionId = "session-1",
@@ -623,6 +696,40 @@ internal static class ToolTests
         TestAssert.Contains("Evidence limitations:", summary);
         TestAssert.Contains("truncated content", summary);
         TestAssert.Contains("partial excerpt", summary);
+        return Task.CompletedTask;
+    }
+
+    public static Task RuleBasedSessionSummarizerExcludesNoisyArtifactHeavyEvidenceAsync()
+    {
+        ISessionSummarizer summarizer = new RuleBasedSessionSummarizer(new RuleBasedEvidenceQualityEvaluator());
+        var sessionState = new AgentSessionState
+        {
+            SessionId = "session-1",
+            WorkspacePath = "workspace",
+            WorkingSummary = "Earlier summary.",
+            VisitedFiles = ["src/AgentOrchestrator.cs", "obj/Debug/net8.0/ProjectLens.AssemblyInfo.cs"],
+            RecentToolHistory = ["search_files: agent orchestrator"]
+        };
+
+        var summary = summarizer.UpdateSummary(
+            sessionState,
+            "search_files",
+            """
+            search_files query: agent orchestrator
+            Total matches: 2
+            Evidence basis: search_files returns filename matches and snippets only; file contents have not been fully read yet.
+            - obj/Debug/net8.0/ProjectLens.AssemblyInfo.cs: agent orchestrator generated metadata
+            - src/AgentOrchestrator.cs: public sealed class AgentOrchestrator
+            """);
+
+        TestAssert.Contains("Likely main flow files: src/AgentOrchestrator.cs", summary);
+        TestAssert.False(
+            summary.Contains("Likely main flow files: obj/Debug/net8.0/ProjectLens.AssemblyInfo.cs", StringComparison.Ordinal),
+            "Low-value artifacts should not dominate the summary.");
+        TestAssert.False(
+            summary.Contains("Visited files: src/AgentOrchestrator.cs, obj/Debug/net8.0/ProjectLens.AssemblyInfo.cs", StringComparison.Ordinal),
+            "Low-value visited files should be filtered when higher-quality evidence exists.");
+        TestAssert.Contains("Evidence limitations:", summary);
         return Task.CompletedTask;
     }
 
@@ -1010,6 +1117,148 @@ internal static class ToolTests
         TestAssert.SequenceEqual(new[] { "docs.txt", "README.md" }, savedState!.VisitedFiles.ToArray());
     }
 
+    public static async Task AgentOrchestratorCuratesLowValueSearchEvidenceFromSessionMemoryAsync()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.WriteText(Path.Combine("src", "AgentOrchestrator.cs"), "public sealed class AgentOrchestrator {}");
+        workspace.WriteText(Path.Combine("obj", "Debug", "net8.0", "ProjectLens.AssemblyInfo.cs"), "internal static class AssemblyInfoMarker {}");
+
+        var evidenceQualityEvaluator = new RuleBasedEvidenceQualityEvaluator();
+        var sessionStore = new InMemoryAgentSessionStore();
+        var modelClient = new ScriptedModelClient(
+            _ => new ModelResponse(
+                ToolCalls: new[]
+                {
+                    new ModelToolCall(
+                        "call-search-1",
+                        "search_files",
+                        new Dictionary<string, string>
+                        {
+                            ["query"] = "AgentOrchestrator",
+                            ["path"] = "."
+                        })
+                },
+                ResponseId: "resp-curate-1"),
+            _ => new ModelResponse(
+                "Grounded final answer: AgentOrchestrator is implemented in src/AgentOrchestrator.cs.",
+                ResponseId: "resp-curate-2"));
+
+        var orchestrator = new AgentOrchestrator(
+            path => new ITool[]
+            {
+                new ListFilesTool(path),
+                new ReadFileTool(path),
+                new SearchFilesTool(path, evidenceQualityEvaluator)
+            },
+            modelClient,
+            new AgentOrchestratorOptions { MaxIterations = 3 },
+            sessionStore,
+            new RuleBasedFileCompressor(),
+            new RuleBasedSessionSummarizer(evidenceQualityEvaluator),
+            evidenceQualityEvaluator);
+
+        var request = new AgentRequest(
+            "Explain AgentOrchestrator",
+            workspace.RootPath,
+            new Dictionary<string, string> { ["sessionId"] = "session-curated-search" });
+
+        var response = await orchestrator.ProcessAsync(request);
+        var savedState = await sessionStore.GetAsync("session-curated-search");
+
+        TestAssert.True(response.Success, "The response should succeed.");
+        TestAssert.NotNull(savedState);
+        TestAssert.SequenceEqual(new[] { "src/AgentOrchestrator.cs" }, savedState!.VisitedFiles.ToArray());
+        TestAssert.Contains("src/AgentOrchestrator.cs", savedState.WorkingSummary);
+        TestAssert.False(
+            savedState.WorkingSummary.Contains("obj/Debug/net8.0/ProjectLens.AssemblyInfo.cs", StringComparison.Ordinal),
+            "Low-value artifact paths should not dominate the persisted summary.");
+    }
+
+    public static async Task AgentOrchestratorRecoversWhenExactKeywordSearchEvidenceIsWeakAsync()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.WriteText(
+            Path.Combine("obj", "Debug", "net8.0", "GeneratedArchiveHints.g.cs"),
+            "internal static class GeneratedArchiveHints { private const string Keyword = \"unzip\"; }");
+        workspace.WriteText(
+            Path.Combine("src", "ArchiveExtractorService.cs"),
+            """
+            public sealed class ArchiveExtractorService
+            {
+                public void ExtractArchive(string archivePath)
+                {
+                    OpenArchive(archivePath);
+                    UnpackEntries();
+                }
+            }
+            """);
+
+        var evidenceQualityEvaluator = new RuleBasedEvidenceQualityEvaluator();
+        var callCount = 0;
+        var modelClient = new ScriptedModelClient(request =>
+        {
+            callCount++;
+            return callCount switch
+            {
+                1 => new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-search-unzip",
+                            "search_files",
+                            new Dictionary<string, string>
+                            {
+                                ["query"] = "unzip",
+                                ["path"] = "."
+                            })
+                    },
+                    ResponseId: "resp-weak-1"),
+                2 => BuildPrematureFinalAnswerAfterWeakSearch(request),
+                3 => BuildRecoverySearchAfterWeakEvidence(request),
+                4 => new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-read-extract",
+                            "read_file",
+                            new Dictionary<string, string>
+                            {
+                                ["path"] = "src/ArchiveExtractorService.cs"
+                            })
+                    },
+                    ResponseId: "resp-weak-4"),
+                5 => BuildFinalResponseAfterTool(
+                    request,
+                    "call-read-extract",
+                    "ArchiveExtractorService",
+                    responseId: "resp-weak-5"),
+                _ => throw new InvalidOperationException("Unexpected model invocation.")
+            };
+        });
+
+        var orchestrator = new AgentOrchestrator(
+            path => new ITool[]
+            {
+                new ListFilesTool(path),
+                new ReadFileTool(path),
+                new SearchFilesTool(path, evidenceQualityEvaluator)
+            },
+            modelClient,
+            new AgentOrchestratorOptions { MaxIterations = 6 },
+            evidenceQualityEvaluator: evidenceQualityEvaluator);
+
+        var response = await orchestrator.ProcessAsync(
+            new AgentRequest("Search for unzip a file related logic and explain the flow", workspace.RootPath));
+
+        TestAssert.True(response.Success, "The orchestrator should recover from weak exact-match evidence.");
+        TestAssert.Contains("ArchiveExtractorService", response.Output);
+        TestAssert.True(
+            response.ExecutionSteps?.Any(step =>
+                step.Description.Contains("weak search evidence", StringComparison.OrdinalIgnoreCase)) == true,
+            "A recovery step should be recorded when the model tries to finalize too early.");
+        TestAssert.Equal(3, response.ToolResults?.Count ?? 0);
+    }
+
     public static async Task AgentOrchestratorPreventsDuplicateToolCallsAsync()
     {
         using var workspace = new TestWorkspace();
@@ -1274,15 +1523,18 @@ internal static class ToolTests
         IModelClient? modelClient = null,
         AgentOrchestratorOptions? options = null)
     {
+        var evidenceQualityEvaluator = new RuleBasedEvidenceQualityEvaluator();
+
         return new AgentOrchestrator(
             path => new ITool[]
             {
                 new ListFilesTool(path),
                 new ReadFileTool(path),
-                new SearchFilesTool(path)
+                new SearchFilesTool(path, evidenceQualityEvaluator)
             },
             modelClient,
-            options);
+            options,
+            evidenceQualityEvaluator: evidenceQualityEvaluator);
     }
 
     private static ModelResponse BuildFinalResponseAfterTool(
@@ -1291,7 +1543,9 @@ internal static class ToolTests
         string expectedSnippet,
         string? responseId = null)
     {
-        var toolMessage = request.Conversation.OfType<ModelToolResultMessage>().Single();
+        var toolMessage = request.Conversation
+            .OfType<ModelToolResultMessage>()
+            .Single(message => message.CallId == callId);
         TestAssert.Equal(callId, toolMessage.CallId);
         TestAssert.Contains(expectedSnippet, toolMessage.Output);
 
@@ -1327,6 +1581,46 @@ internal static class ToolTests
         return new ModelResponse(
             "Grounded final answer: use the existing evidence instead of repeating the same search.",
             ResponseId: "resp-after-duplicate");
+    }
+
+    private static ModelResponse BuildPrematureFinalAnswerAfterWeakSearch(ModelRequest request)
+    {
+        var toolMessage = request.Conversation
+            .OfType<ModelToolResultMessage>()
+            .Single(message => message.CallId == "call-search-unzip");
+
+        TestAssert.Contains("Weak evidence:", toolMessage.Output);
+        TestAssert.Contains("low-value or generated paths", toolMessage.Output);
+        TestAssert.Contains("extract", toolMessage.Output);
+        TestAssert.Contains("inspect a likely main source file", toolMessage.Output);
+
+        return new ModelResponse(
+            "Grounded final answer: unzip logic appears to be handled in generated files.",
+            ResponseId: "resp-weak-2");
+    }
+
+    private static ModelResponse BuildRecoverySearchAfterWeakEvidence(ModelRequest request)
+    {
+        var recoveryMessage = request.Conversation
+            .OfType<ModelTextMessage>()
+            .Last();
+
+        TestAssert.Contains("Do not finalize yet", recoveryMessage.Content);
+        TestAssert.Contains("Try a broader related search", recoveryMessage.Content);
+
+        return new ModelResponse(
+            ToolCalls: new[]
+            {
+                new ModelToolCall(
+                    "call-search-extract",
+                    "search_files",
+                    new Dictionary<string, string>
+                    {
+                        ["query"] = "extract",
+                        ["path"] = "."
+                    })
+            },
+            ResponseId: "resp-weak-3");
     }
 
     private static ModelResponse BuildReadRequestAfterDuplicate(ModelRequest request, string duplicateCallId)

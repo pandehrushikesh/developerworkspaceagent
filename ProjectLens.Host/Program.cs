@@ -18,15 +18,16 @@ try
     }
 
     IAgentSessionStore sessionStore = new FileBasedAgentSessionStore(AppContext.BaseDirectory);
+    IEvidenceQualityEvaluator evidenceQualityEvaluator = new RuleBasedEvidenceQualityEvaluator();
     IFileCompressor fileCompressor = new RuleBasedFileCompressor();
-    ISessionSummarizer sessionSummarizer = new RuleBasedSessionSummarizer();
+    ISessionSummarizer sessionSummarizer = new RuleBasedSessionSummarizer(evidenceQualityEvaluator);
 
     var orchestrator = new AgentOrchestrator(
         workspacePath => new ITool[]
         {
             new ListFilesTool(workspacePath),
             new ReadFileTool(workspacePath),
-            new SearchFilesTool(workspacePath)
+            new SearchFilesTool(workspacePath, evidenceQualityEvaluator)
         },
         modelClient,
         new AgentOrchestratorOptions
@@ -35,7 +36,8 @@ try
         },
         sessionStore,
         fileCompressor,
-        sessionSummarizer);
+        sessionSummarizer,
+        evidenceQualityEvaluator);
 
     Console.WriteLine("ProjectLens host is ready.");
     Console.WriteLine(modelClient is null
