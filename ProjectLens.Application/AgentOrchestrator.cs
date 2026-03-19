@@ -109,6 +109,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             new ModelTextMessage("user", request.UserPrompt)
         };
         var executedToolCalls = new HashSet<string>(StringComparer.Ordinal);
+        AggregatedEvidenceContext? aggregatedEvidenceContext = null;
         var hasPendingWeakSearchEvidence = false;
         string? weakSearchRecoveryGuidance = null;
         string? previousResponseId = null;
@@ -144,6 +145,19 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
                     conversation.Add(new ModelTextMessage(
                         "user",
                         BuildWeakSearchRecoveryPrompt(weakSearchRecoveryGuidance)));
+
+                    continue;
+                }
+
+                if (RequiresMoreMultiFileEvidence(aggregatedEvidenceContext, request.UserPrompt))
+                {
+                    steps.Add(new AgentExecutionStep(
+                        "Model attempted to finalize before aggregating enough multi-file evidence; requesting one more supporting file.",
+                        false));
+
+                    conversation.Add(new ModelTextMessage(
+                        "user",
+                        BuildMultiFileAggregationPrompt(aggregatedEvidenceContext!)));
 
                     continue;
                 }
@@ -194,7 +208,11 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
                 toolResults.Add(executionResult);
 
                 var output = executionResult.Success
-                    ? CreateToolContextOutput(toolCall.ToolName, executionResult.Output, request.UserPrompt)
+                    ? CreateToolContextOutput(
+                        toolCall.ToolName,
+                        executionResult.Output,
+                        request.UserPrompt,
+                        ref aggregatedEvidenceContext)
                     : executionResult.ErrorMessage ?? "Tool execution failed.";
 
                 if (executionResult.Success)
@@ -475,6 +493,12 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             Use tool calls only when they materially help answer the user's request.
             Do not repeat the same tool call with the same arguments unless the earlier results were clearly insufficient.
             After search_files returns likely matches, prefer read_file on the most relevant result instead of repeating search_files.
+            If multiple meaningful source files appear relevant to a logic, flow, architecture, or refactor question, inspect up to 2-3 of the top files and synthesize across them before finalizing.
+            Distinguish the likely main flow file from supporting files when multiple files contribute to the answer.
+            For feature-tracing prompts, prefer files closest to the requested feature intent such as feature-related controllers, services, entities/models, and frontend/API consumers.
+            Do not default to Program.cs, startup wiring, authentication, or session plumbing as the main flow unless the evidence clearly shows the feature is implemented there.
+            If the current feature context is marked provisional, do not treat any candidate file as settled truth yet.
+            For follow-up prompts like "Which files appear to drive that feature?" or "Now suggest a refactor for that flow.", explicitly preserve that uncertainty, name the strongest current candidates, and avoid overconfident refactor guidance tied to unrelated flows.
             If an exact keyword search returns only low-value, generated, config, project, or other non-source matches, treat that as weak evidence rather than enough support for a final logic answer.
             When search evidence is weak, prefer one bounded recovery step: either broaden the search with related terms (for example unzip -> extract, archive, zip, decompress, unpack) or inspect a likely main source file before answering.
             For follow-up requests about refactoring, improving, or explaining logic you already inspected, use the existing session context and prior file summaries first.
@@ -501,6 +525,11 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         {
             builder.AppendLine();
             builder.AppendLine("Existing session context for this workspace:");
+
+            if (IsProvisionalFeatureContext(sessionState.WorkingSummary))
+            {
+                builder.AppendLine("The existing feature-flow context is provisional; treat candidate files as hypotheses until enough supporting evidence is read.");
+            }
 
             if (!string.IsNullOrWhiteSpace(sessionState.WorkingSummary))
             {
@@ -529,7 +558,8 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
     private string CreateToolContextOutput(
         string toolName,
         string? rawToolOutput,
-        string userPrompt)
+        string userPrompt,
+        ref AggregatedEvidenceContext? aggregatedEvidenceContext)
     {
         if (string.IsNullOrWhiteSpace(rawToolOutput))
         {
@@ -547,13 +577,23 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             var evidenceBasis = isTruncated
                 ? $"Evidence basis: read_file returned truncated content at {characterCount} characters; recommendations should stay grounded to that partial excerpt."
                 : $"Evidence basis: read_file returned a bounded excerpt of {characterCount} characters; use observed facts from this excerpt and label broader refactor ideas as inferred.";
-
-            return $"{compressedOutput}{Environment.NewLine}{evidenceBasis}";
+            var baseOutput = $"{compressedOutput}{Environment.NewLine}{evidenceBasis}";
+            aggregatedEvidenceContext = UpdateAggregatedEvidenceFromRead(
+                aggregatedEvidenceContext,
+                path,
+                baseOutput);
+            return AppendAggregatedEvidenceContext(baseOutput, aggregatedEvidenceContext);
         }
 
         if (string.Equals(toolName, SearchFilesToolName, StringComparison.OrdinalIgnoreCase))
         {
-            return SummarizeSearchResults(rawToolOutput, userPrompt, _evidenceQualityEvaluator);
+            aggregatedEvidenceContext = BuildAggregatedEvidenceContext(
+                rawToolOutput,
+                userPrompt,
+                _evidenceQualityEvaluator,
+                aggregatedEvidenceContext);
+            var searchSummary = SummarizeSearchResults(rawToolOutput, userPrompt, _evidenceQualityEvaluator);
+            return AppendAggregatedEvidenceContext(searchSummary, aggregatedEvidenceContext);
         }
 
         return rawToolOutput;
@@ -844,6 +884,356 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             : recoveryGuidance.Trim();
 
         return $"The previous exact keyword search was weak evidence for a logic explanation. Do not finalize yet. {guidance}";
+    }
+
+    private static bool RequiresMoreMultiFileEvidence(
+        AggregatedEvidenceContext? aggregatedEvidenceContext,
+        string userPrompt)
+    {
+        if (aggregatedEvidenceContext is null || !RequiresMultiFileSynthesis(userPrompt))
+        {
+            return false;
+        }
+
+        var selectedFileCount = aggregatedEvidenceContext.Files.Count;
+        if (selectedFileCount < 2)
+        {
+            return false;
+        }
+
+        var observedFileCount = aggregatedEvidenceContext.Files.Count(file =>
+            !string.IsNullOrWhiteSpace(file.ObservationSummary));
+
+        var requiredObservedFiles = Math.Min(2, selectedFileCount);
+
+        return observedFileCount < requiredObservedFiles;
+    }
+
+    private static bool RequiresMultiFileSynthesis(string userPrompt)
+    {
+        if (string.IsNullOrWhiteSpace(userPrompt))
+        {
+            return false;
+        }
+
+        var normalizedPrompt = userPrompt.ToLowerInvariant();
+        var synthesisSignals = new[]
+        {
+            "flow", "logic", "architecture", "explain", "how", "refactor", "structure", "interaction", "pipeline"
+        };
+
+        return synthesisSignals.Any(signal => normalizedPrompt.Contains(signal, StringComparison.Ordinal));
+    }
+
+    private static bool IsFeatureTracingPrompt(string userPrompt)
+    {
+        if (string.IsNullOrWhiteSpace(userPrompt))
+        {
+            return false;
+        }
+
+        var normalizedPrompt = userPrompt.ToLowerInvariant();
+        var featureSignals = new[]
+        {
+            "trace", "feature", "creation", "create", "publish", "save", "add", "works across", "end-to-end"
+        };
+
+        return featureSignals.Any(signal => normalizedPrompt.Contains(signal, StringComparison.Ordinal));
+    }
+
+    private AggregatedEvidenceContext? BuildAggregatedEvidenceContext(
+        string rawToolOutput,
+        string userPrompt,
+        IEvidenceQualityEvaluator? evidenceQualityEvaluator,
+        AggregatedEvidenceContext? existingContext)
+    {
+        if (evidenceQualityEvaluator is null || !RequiresMultiFileSynthesis(userPrompt))
+        {
+            return existingContext;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(rawToolOutput);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("Matches", out var matchesElement))
+            {
+                return existingContext;
+            }
+
+            var query = root.TryGetProperty("Query", out var queryElement) ? queryElement.GetString() : null;
+            var allMatches = matchesElement.EnumerateArray()
+                .Select(match => new EvidenceMatch(
+                    match.TryGetProperty("Path", out var pathElement) ? pathElement.GetString() ?? string.Empty : string.Empty,
+                    match.TryGetProperty("Snippet", out var snippetElement) ? snippetElement.GetString() ?? string.Empty : string.Empty,
+                    match.TryGetProperty("LineNumber", out var lineNumberElement) ? lineNumberElement.GetInt32() : 0))
+                .Where(match => !string.IsNullOrWhiteSpace(match.Path))
+                .ToArray();
+            var rankedMatches = evidenceQualityEvaluator
+                .RankMatches(allMatches, query ?? userPrompt, Math.Min(20, Math.Max(allMatches.Length, 5)));
+
+            var selectedPaths = rankedMatches
+                .Where(match => evidenceQualityEvaluator.IsMeaningfulSourcePath(match.Path))
+                .GroupBy(match => match.Path, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .OrderByDescending(match => GetAggregationPriority(match.Path, match.Snippet, userPrompt, evidenceQualityEvaluator))
+                .ThenByDescending(match => evidenceQualityEvaluator.ScoreFile(match.Path, match.Snippet, query ?? userPrompt))
+                .ThenBy(match => match.Path, StringComparer.OrdinalIgnoreCase)
+                .Select(match => match.Path)
+                .Take(3)
+                .ToArray();
+
+            if (selectedPaths.Length < 2)
+            {
+                return existingContext;
+            }
+
+            var selectedFiles = selectedPaths
+                .Select((path, index) => new AggregatedEvidenceFile(
+                    path,
+                    index == 0
+                        ? "Likely main flow file based on the strongest meaningful source match for the current request."
+                        : "Supporting source file selected as additional relevant evidence for the current request.",
+                    existingContext?.Files.FirstOrDefault(file =>
+                        string.Equals(file.Path, path, StringComparison.OrdinalIgnoreCase))?.ObservationSummary ?? string.Empty))
+                .ToArray();
+
+            var evidenceLimitations = new List<string>
+            {
+                $"Selection is based on ranked search matches and snippets; {CountObservedFiles(selectedFiles)} of {selectedFiles.Length} selected file(s) have been read so far."
+            };
+
+            if (IsFeatureTracingPrompt(userPrompt) && CountObservedFiles(selectedFiles) < Math.Min(2, selectedFiles.Length))
+            {
+                evidenceLimitations.Add("Feature flow is still being traced; the current main-flow file is provisional until more supporting files are read.");
+            }
+
+            return new AggregatedEvidenceContext(
+                IsFeatureTracingPrompt(userPrompt),
+                IsFeatureTracingPrompt(userPrompt),
+                selectedFiles[0].Path,
+                selectedFiles,
+                evidenceLimitations);
+        }
+        catch
+        {
+            return existingContext;
+        }
+    }
+
+    private static AggregatedEvidenceContext? UpdateAggregatedEvidenceFromRead(
+        AggregatedEvidenceContext? aggregatedEvidenceContext,
+        string path,
+        string baseOutput)
+    {
+        if (aggregatedEvidenceContext is null)
+        {
+            return null;
+        }
+
+        var updatedFiles = aggregatedEvidenceContext.Files
+            .Select(file => string.Equals(file.Path, path, StringComparison.OrdinalIgnoreCase)
+                ? file with { ObservationSummary = CreateSnippet(baseOutput) }
+                : file)
+            .ToArray();
+
+        if (updatedFiles.All(file => string.IsNullOrWhiteSpace(file.ObservationSummary)))
+        {
+            return aggregatedEvidenceContext;
+        }
+
+        var evidenceLimitations = new[]
+        {
+            $"Multi-file aggregation currently covers {CountObservedFiles(updatedFiles)} of {updatedFiles.Length} selected file(s)."
+        }.Concat(aggregatedEvidenceContext.EvidenceLimitations
+            .Where(limitation => limitation.Contains("provisional", StringComparison.OrdinalIgnoreCase)))
+        .Distinct(StringComparer.Ordinal)
+        .ToArray();
+
+        var isProvisional = aggregatedEvidenceContext.IsFeatureTrace && CountObservedFiles(updatedFiles) < 2;
+        if (!isProvisional)
+        {
+            evidenceLimitations = evidenceLimitations
+                .Where(limitation => !limitation.Contains("provisional", StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+        }
+
+        return aggregatedEvidenceContext with
+        {
+            IsProvisional = isProvisional,
+            Files = updatedFiles,
+            EvidenceLimitations = evidenceLimitations
+        };
+    }
+
+    private static string AppendAggregatedEvidenceContext(
+        string output,
+        AggregatedEvidenceContext? aggregatedEvidenceContext)
+    {
+        if (aggregatedEvidenceContext is null)
+        {
+            return output;
+        }
+
+        var builder = new StringBuilder(output.TrimEnd());
+        builder.AppendLine();
+        builder.AppendLine("Aggregation context:");
+
+        if (aggregatedEvidenceContext.IsFeatureTrace)
+        {
+            builder.AppendLine($"Feature flow confidence: {(aggregatedEvidenceContext.IsProvisional ? "provisional" : "strong")}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(aggregatedEvidenceContext.LikelyMainFlowFile))
+        {
+            builder.AppendLine($"Likely main flow file: {aggregatedEvidenceContext.LikelyMainFlowFile}");
+        }
+
+        foreach (var file in aggregatedEvidenceContext.Files)
+        {
+            if (string.Equals(file.Path, aggregatedEvidenceContext.LikelyMainFlowFile, StringComparison.OrdinalIgnoreCase))
+            {
+                builder.AppendLine($"Selected file: {file.Path} | reason: {file.SelectionReason}");
+            }
+            else
+            {
+                builder.AppendLine($"Supporting file: {file.Path} | reason: {file.SelectionReason}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(file.ObservationSummary))
+            {
+                builder.AppendLine($"Observed file summary: {file.Path} => {file.ObservationSummary}");
+            }
+        }
+
+        foreach (var limitation in aggregatedEvidenceContext.EvidenceLimitations)
+        {
+            builder.AppendLine($"Aggregation limitation: {limitation}");
+        }
+
+        return builder.ToString().TrimEnd();
+    }
+
+    private static string BuildMultiFileAggregationPrompt(AggregatedEvidenceContext aggregatedEvidenceContext)
+    {
+        var unreadSupportingFiles = aggregatedEvidenceContext.Files
+            .Where(file =>
+                !string.Equals(file.Path, aggregatedEvidenceContext.LikelyMainFlowFile, StringComparison.OrdinalIgnoreCase) &&
+                string.IsNullOrWhiteSpace(file.ObservationSummary))
+            .Select(file => file.Path)
+            .Take(2)
+            .ToArray();
+
+        var targetFiles = unreadSupportingFiles.Length > 0
+            ? string.Join(", ", unreadSupportingFiles)
+            : string.Join(", ", aggregatedEvidenceContext.Files
+                .Where(file => string.IsNullOrWhiteSpace(file.ObservationSummary))
+                .Select(file => file.Path)
+                .Take(2));
+
+        return $"Multiple meaningful source files appear relevant. Do not finalize yet. Inspect one more supporting file before answering, preferably from: {targetFiles}. For feature tracing, prioritize controller/service/model/frontend files that are closest to the requested feature intent. Then synthesize across the likely main flow file and supporting files, separating observed facts from inferred recommendations.";
+    }
+
+    private static int CountObservedFiles(IEnumerable<AggregatedEvidenceFile> files)
+    {
+        return files.Count(file => !string.IsNullOrWhiteSpace(file.ObservationSummary));
+    }
+
+    private static bool IsProvisionalFeatureContext(string? workingSummary)
+    {
+        return !string.IsNullOrWhiteSpace(workingSummary) &&
+            (workingSummary.Contains("Feature flow confidence: provisional", StringComparison.OrdinalIgnoreCase) ||
+             workingSummary.Contains("Current feature-flow understanding is provisional", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static int GetAggregationPriority(
+        string path,
+        string snippet,
+        string userPrompt,
+        IEvidenceQualityEvaluator evidenceQualityEvaluator)
+    {
+        if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(userPrompt))
+        {
+            return 0;
+        }
+
+        var lowerPath = path.ToLowerInvariant();
+        var lowerPrompt = userPrompt.ToLowerInvariant();
+        var score = 0;
+        var isFeatureTracingPrompt = evidenceQualityEvaluator.IsFeatureTracingPrompt(userPrompt);
+        var intentTerms = evidenceQualityEvaluator.ExpandIntentTerms(userPrompt);
+        var matchedIntentTerms = intentTerms.Count(term =>
+            lowerPath.Contains(term, StringComparison.Ordinal) ||
+            snippet.Contains(term, StringComparison.OrdinalIgnoreCase));
+
+        if (lowerPrompt.Contains("flow", StringComparison.Ordinal) ||
+            lowerPrompt.Contains("architecture", StringComparison.Ordinal) ||
+            lowerPrompt.Contains("explain", StringComparison.Ordinal) ||
+            lowerPrompt.Contains("how", StringComparison.Ordinal))
+        {
+            if (lowerPath.Contains("controller", StringComparison.Ordinal) ||
+                lowerPath.Contains("program", StringComparison.Ordinal) ||
+                lowerPath.Contains("startup", StringComparison.Ordinal) ||
+                lowerPath.Contains("handler", StringComparison.Ordinal) ||
+                lowerPath.Contains("service", StringComparison.Ordinal) ||
+                lowerPath.Contains("manager", StringComparison.Ordinal) ||
+                lowerPath.Contains("orchestrator", StringComparison.Ordinal))
+            {
+                score += 40;
+            }
+
+            if (lowerPath.Contains("repository", StringComparison.Ordinal))
+            {
+                score += 5;
+            }
+
+            if (lowerPath.Contains("helper", StringComparison.Ordinal) ||
+                lowerPath.Contains("util", StringComparison.Ordinal) ||
+                lowerPath.Contains("utility", StringComparison.Ordinal))
+            {
+                score -= 25;
+            }
+        }
+
+        if (isFeatureTracingPrompt)
+        {
+            score += matchedIntentTerms * 10;
+
+            if (lowerPath.Contains("controller", StringComparison.Ordinal))
+            {
+                score += 30;
+            }
+
+            if (lowerPath.Contains("service", StringComparison.Ordinal))
+            {
+                score += 26;
+            }
+
+            if (lowerPath.Contains("entity", StringComparison.Ordinal) ||
+                lowerPath.Contains("model", StringComparison.Ordinal) ||
+                lowerPath.Contains("blogscontroller", StringComparison.Ordinal) ||
+                lowerPath.Contains("blogpost", StringComparison.Ordinal))
+            {
+                score += 18;
+            }
+
+            if (lowerPath.EndsWith("app.jsx", StringComparison.Ordinal) ||
+                lowerPath.EndsWith("app.tsx", StringComparison.Ordinal) ||
+                lowerPath.Contains("/src/", StringComparison.Ordinal))
+            {
+                score += 16;
+            }
+
+            if (lowerPath.EndsWith("program.cs", StringComparison.Ordinal) ||
+                lowerPath.Contains("authcontroller", StringComparison.Ordinal) ||
+                lowerPath.Contains("sessionscontroller", StringComparison.Ordinal) ||
+                lowerPath.Contains("tokenservice", StringComparison.Ordinal))
+            {
+                score -= 45;
+            }
+        }
+
+        return score;
     }
 
     private async Task<ToolExecutionResult> ExecuteToolCallAsync(

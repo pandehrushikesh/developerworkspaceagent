@@ -1,16 +1,21 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Collections.Concurrent;
 using ProjectLens.Domain;
 
 namespace ProjectLens.Infrastructure;
 
 public sealed class FileBasedAgentSessionStore : IAgentSessionStore
 {
+    private const int ReplaceRetryCount = 3;
+    private static readonly TimeSpan ReplaceRetryDelay = TimeSpan.FromMilliseconds(40);
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true
     };
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> SessionWriteLocks =
+        new(StringComparer.OrdinalIgnoreCase);
 
     private readonly string _sessionsDirectoryPath;
 
@@ -39,7 +44,7 @@ public sealed class FileBasedAgentSessionStore : IAgentSessionStore
             sessionFilePath,
             FileMode.Open,
             FileAccess.Read,
-            FileShare.Read,
+            FileShare.ReadWrite | FileShare.Delete,
             bufferSize: 4096,
             useAsync: true);
 
@@ -63,6 +68,26 @@ public sealed class FileBasedAgentSessionStore : IAgentSessionStore
         Directory.CreateDirectory(_sessionsDirectoryPath);
 
         var sessionFilePath = GetSessionFilePath(sessionState.SessionId);
+        var sessionWriteLock = SessionWriteLocks.GetOrAdd(
+            sessionFilePath,
+            static _ => new SemaphoreSlim(1, 1));
+
+        await sessionWriteLock.WaitAsync(cancellationToken);
+        try
+        {
+            await SaveCoreAsync(sessionState, sessionFilePath, cancellationToken);
+        }
+        finally
+        {
+            sessionWriteLock.Release();
+        }
+    }
+
+    private async Task SaveCoreAsync(
+        AgentSessionState sessionState,
+        string sessionFilePath,
+        CancellationToken cancellationToken)
+    {
         var tempFilePath = $"{sessionFilePath}.{Guid.NewGuid():N}.tmp";
         var now = DateTimeOffset.UtcNow;
         var existingState = await GetAsync(sessionState.SessionId, cancellationToken);
@@ -83,14 +108,11 @@ public sealed class FileBasedAgentSessionStore : IAgentSessionStore
                 await JsonSerializer.SerializeAsync(stream, normalizedState, SerializerOptions, cancellationToken);
             }
 
-            ReplaceFile(tempFilePath, sessionFilePath);
+            await ReplaceFileWithRetryAsync(tempFilePath, sessionFilePath, cancellationToken);
         }
         finally
         {
-            if (File.Exists(tempFilePath))
-            {
-                File.Delete(tempFilePath);
-            }
+            await DeleteFileIfExistsWithRetryAsync(tempFilePath, cancellationToken);
         }
     }
 
@@ -149,14 +171,64 @@ public sealed class FileBasedAgentSessionStore : IAgentSessionStore
         };
     }
 
-    private static void ReplaceFile(string tempFilePath, string destinationFilePath)
+    private static async Task ReplaceFileWithRetryAsync(
+        string tempFilePath,
+        string destinationFilePath,
+        CancellationToken cancellationToken)
     {
-        if (OperatingSystem.IsWindows() && File.Exists(destinationFilePath))
+        for (var attempt = 1; attempt <= ReplaceRetryCount; attempt++)
         {
-            File.Replace(tempFilePath, destinationFilePath, destinationBackupFileName: null, ignoreMetadataErrors: true);
-            return;
-        }
+            cancellationToken.ThrowIfCancellationRequested();
 
-        File.Move(tempFilePath, destinationFilePath, overwrite: true);
+            try
+            {
+                if (OperatingSystem.IsWindows() && File.Exists(destinationFilePath))
+                {
+                    File.Replace(
+                        tempFilePath,
+                        destinationFilePath,
+                        destinationBackupFileName: null,
+                        ignoreMetadataErrors: true);
+                }
+                else
+                {
+                    File.Move(tempFilePath, destinationFilePath, overwrite: true);
+                }
+
+                return;
+            }
+            catch (Exception exception) when (
+                attempt < ReplaceRetryCount &&
+                exception is IOException or UnauthorizedAccessException)
+            {
+                await Task.Delay(ReplaceRetryDelay, cancellationToken);
+            }
+        }
+    }
+
+    private static async Task DeleteFileIfExistsWithRetryAsync(
+        string filePath,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 1; attempt <= ReplaceRetryCount; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                if (File.Exists(filePath))
+                {
+                    File.Delete(filePath);
+                }
+
+                return;
+            }
+            catch (Exception exception) when (
+                attempt < ReplaceRetryCount &&
+                exception is IOException or UnauthorizedAccessException)
+            {
+                await Task.Delay(ReplaceRetryDelay, cancellationToken);
+            }
+        }
     }
 }

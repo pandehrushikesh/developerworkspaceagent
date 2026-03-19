@@ -5,6 +5,26 @@ namespace ProjectLens.Infrastructure;
 
 public sealed class RuleBasedEvidenceQualityEvaluator : IEvidenceQualityEvaluator
 {
+    private static readonly HashSet<string> StopWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "the", "and", "for", "how", "works", "work", "across", "codebase", "related", "file", "search", "trace"
+    };
+
+    private static readonly string[] FeatureTracingSignals =
+    [
+        "trace",
+        "feature",
+        "creation",
+        "create",
+        "publish",
+        "save",
+        "add",
+        "submit",
+        "flow",
+        "works across",
+        "end-to-end"
+    ];
+
     private static readonly string[] LowValueSegments =
     [
         "bin",
@@ -47,6 +67,22 @@ public sealed class RuleBasedEvidenceQualityEvaluator : IEvidenceQualityEvaluato
         "app"
     ];
 
+    private static readonly Dictionary<string, string[]> IntentExpansionMap = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["blog"] = ["blog", "post", "article"],
+        ["post"] = ["post", "blog", "article"],
+        ["article"] = ["article", "blog", "post"],
+        ["create"] = ["create", "creation", "add", "publish", "save", "submit"],
+        ["creation"] = ["create", "creation", "add", "publish", "save", "submit"],
+        ["publish"] = ["publish", "create", "save", "post"],
+        ["save"] = ["save", "create", "update", "submit"],
+        ["write"] = ["write", "draft", "publish", "create"],
+        ["edit"] = ["edit", "update", "save"],
+        ["auth"] = ["auth", "login", "token", "session", "user"],
+        ["login"] = ["login", "auth", "token", "session"],
+        ["session"] = ["session", "token", "auth", "user"]
+    };
+
     public bool IsLowValuePath(string path)
     {
         if (string.IsNullOrWhiteSpace(path))
@@ -71,6 +107,46 @@ public sealed class RuleBasedEvidenceQualityEvaluator : IEvidenceQualityEvaluato
         var fileName = Path.GetFileName(normalizedPath);
         var extension = Path.GetExtension(fileName);
         return SourceExtensions.Contains(extension);
+    }
+
+    public bool IsFeatureTracingPrompt(string? userPrompt)
+    {
+        if (string.IsNullOrWhiteSpace(userPrompt))
+        {
+            return false;
+        }
+
+        var normalizedPrompt = userPrompt.ToLowerInvariant();
+        return FeatureTracingSignals.Any(signal => normalizedPrompt.Contains(signal, StringComparison.Ordinal));
+    }
+
+    public IReadOnlyCollection<string> ExpandIntentTerms(string? userPrompt)
+    {
+        return ExpandIntentTermsCore(userPrompt);
+    }
+
+    private static IReadOnlyCollection<string> ExpandIntentTermsCore(string? userPrompt)
+    {
+        if (string.IsNullOrWhiteSpace(userPrompt))
+        {
+            return Array.Empty<string>();
+        }
+
+        var expanded = new List<string>();
+        foreach (var token in Tokenize(userPrompt))
+        {
+            if (IntentExpansionMap.TryGetValue(token, out var mappedTerms))
+            {
+                expanded.AddRange(mappedTerms);
+            }
+
+            expanded.Add(token);
+        }
+
+        return expanded
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(10)
+            .ToArray();
     }
 
     public int ScoreFile(
@@ -141,6 +217,7 @@ public sealed class RuleBasedEvidenceQualityEvaluator : IEvidenceQualityEvaluato
         }
 
         score += ScorePromptRelevance(normalizedPath, snippet, userPrompt);
+        score += ScoreFeatureIntentAlignment(normalizedPath, snippet, userPrompt);
         return score;
     }
 
@@ -283,10 +360,74 @@ public sealed class RuleBasedEvidenceQualityEvaluator : IEvidenceQualityEvaluato
         return Math.Min(score, 50);
     }
 
+    private int ScoreFeatureIntentAlignment(
+        string normalizedPath,
+        string? snippet,
+        string? userPrompt)
+    {
+        if (!IsFeatureTracingPrompt(userPrompt))
+        {
+            return 0;
+        }
+
+        var lowerPath = normalizedPath.ToLowerInvariant();
+        var lowerSnippet = snippet?.ToLowerInvariant() ?? string.Empty;
+        var fileName = Path.GetFileName(lowerPath);
+        var score = 0;
+        var intentTerms = ExpandIntentTerms(userPrompt);
+        var matchedIntentTerms = intentTerms.Count(term =>
+            lowerPath.Contains(term, StringComparison.Ordinal) ||
+            (!string.IsNullOrWhiteSpace(lowerSnippet) && lowerSnippet.Contains(term, StringComparison.Ordinal)));
+
+        score += matchedIntentTerms * 12;
+
+        if (lowerPath.Contains("controller", StringComparison.Ordinal))
+        {
+            score += 28;
+        }
+
+        if (lowerPath.Contains("service", StringComparison.Ordinal))
+        {
+            score += 24;
+        }
+
+        if (lowerPath.Contains("entity", StringComparison.Ordinal) ||
+            lowerPath.Contains("model", StringComparison.Ordinal))
+        {
+            score += 18;
+        }
+
+        if (lowerPath.EndsWith("app.jsx", StringComparison.Ordinal) ||
+            lowerPath.EndsWith("app.tsx", StringComparison.Ordinal) ||
+            lowerPath.Contains("/src/", StringComparison.Ordinal))
+        {
+            score += 16;
+        }
+
+        if (lowerPath.EndsWith("program.cs", StringComparison.Ordinal) ||
+            lowerPath.EndsWith("startup.cs", StringComparison.Ordinal) ||
+            lowerPath.Contains("launchsettings", StringComparison.Ordinal))
+        {
+            score -= 40;
+        }
+
+        if (matchedIntentTerms == 0 &&
+            (lowerPath.Contains("program", StringComparison.Ordinal) ||
+             lowerPath.Contains("startup", StringComparison.Ordinal) ||
+             lowerPath.Contains("auth", StringComparison.Ordinal) ||
+             lowerPath.Contains("session", StringComparison.Ordinal)))
+        {
+            score -= 30;
+        }
+
+        return Math.Max(score, -60);
+    }
+
     private static IEnumerable<string> Tokenize(string value)
     {
         return Regex.Matches(value.ToLowerInvariant(), "[a-z0-9]{3,}")
             .Select(match => match.Value)
+            .Where(token => !StopWords.Contains(token))
             .Distinct(StringComparer.Ordinal);
     }
 
@@ -338,10 +479,11 @@ public sealed class RuleBasedEvidenceQualityEvaluator : IEvidenceQualityEvaluato
         AddRelatedTermsIfPresent(prompt, relatedTerms, "zip", ["archive", "compress", "extract", "unzip"]);
         AddRelatedTermsIfPresent(prompt, relatedTerms, "extract", ["archive", "zip", "unzip", "decompress"]);
         AddRelatedTermsIfPresent(prompt, relatedTerms, "archive", ["extract", "zip", "unzip", "decompress"]);
+        relatedTerms.AddRange(ExpandIntentTermsCore(userPrompt));
 
         return relatedTerms
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Take(5)
+            .Take(6)
             .ToArray();
     }
 

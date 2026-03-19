@@ -30,7 +30,19 @@ public sealed class RuleBasedSessionSummarizer : ISessionSummarizer
 
         if (findings.MainFlowFiles.Count > 0)
         {
-            builder.AppendLine($"Likely main flow files: {string.Join(", ", findings.MainFlowFiles)}");
+            if (findings.HasProvisionalMainFlow)
+            {
+                builder.AppendLine($"Feature flow candidates: {string.Join(", ", findings.MainFlowFiles)}");
+            }
+            else
+            {
+                builder.AppendLine($"Likely main flow files: {string.Join(", ", findings.MainFlowFiles)}");
+            }
+        }
+
+        if (findings.SupportingFiles.Count > 0)
+        {
+            builder.AppendLine($"Supporting files: {string.Join(", ", findings.SupportingFiles)}");
         }
 
         if (findings.ImportantSymbols.Count > 0)
@@ -46,6 +58,11 @@ public sealed class RuleBasedSessionSummarizer : ISessionSummarizer
         if (findings.EvidenceLimitations.Count > 0)
         {
             builder.AppendLine($"Evidence limitations: {string.Join(" | ", findings.EvidenceLimitations)}");
+        }
+
+        if (findings.HasProvisionalMainFlow)
+        {
+            builder.AppendLine("Current feature-flow understanding is provisional and may shift as more supporting files are read.");
         }
 
         var curatedVisitedFiles = _evidenceQualityEvaluator.SelectPathsForSessionMemory(sessionState.VisitedFiles, 8);
@@ -104,10 +121,14 @@ public sealed class RuleBasedSessionSummarizer : ISessionSummarizer
         IEvidenceQualityEvaluator evidenceQualityEvaluator)
     {
         var files = new List<string>();
+        var supportingFiles = new List<string>();
         var symbols = new List<string>();
         var operations = new List<string>();
         var limitations = new List<string>();
         var foundLowValueEvidence = false;
+        var hasProvisionalMainFlow = false;
+        var featureFlowConfidence = string.Empty;
+        string? explicitMainFlowFile = null;
 
         foreach (var rawLine in toolOutput.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
@@ -118,6 +139,37 @@ public sealed class RuleBasedSessionSummarizer : ISessionSummarizer
                 var path = line["File: ".Length..];
                 files.Add(path);
                 foundLowValueEvidence |= evidenceQualityEvaluator.IsLowValuePath(path);
+                continue;
+            }
+
+            if (line.StartsWith("Likely main flow file: ", StringComparison.Ordinal))
+            {
+                var path = line["Likely main flow file: ".Length..].Trim();
+                explicitMainFlowFile = path;
+                files.Add(path);
+                foundLowValueEvidence |= evidenceQualityEvaluator.IsLowValuePath(path);
+                continue;
+            }
+
+            if (line.StartsWith("Feature flow confidence: ", StringComparison.Ordinal))
+            {
+                featureFlowConfidence = line["Feature flow confidence: ".Length..].Trim();
+                hasProvisionalMainFlow |= featureFlowConfidence.Equals("provisional", StringComparison.OrdinalIgnoreCase);
+                continue;
+            }
+
+            if (line.StartsWith("Supporting file: ", StringComparison.Ordinal))
+            {
+                var path = line["Supporting file: ".Length..]
+                    .Split('|', 2, StringSplitOptions.TrimEntries)[0]
+                    .Trim();
+                if (!string.IsNullOrWhiteSpace(path))
+                {
+                    supportingFiles.Add(path);
+                    files.Add(path);
+                    foundLowValueEvidence |= evidenceQualityEvaluator.IsLowValuePath(path);
+                }
+
                 continue;
             }
 
@@ -157,6 +209,20 @@ public sealed class RuleBasedSessionSummarizer : ISessionSummarizer
                 continue;
             }
 
+            if (line.StartsWith("Observed file summary: ", StringComparison.Ordinal))
+            {
+                operations.Add(CreateSnippet(line));
+                continue;
+            }
+
+            if (line.StartsWith("Aggregation limitation: ", StringComparison.Ordinal))
+            {
+                var limitation = CreateSnippet(line["Aggregation limitation: ".Length..]);
+                limitations.Add(limitation);
+                hasProvisionalMainFlow |= limitation.Contains("provisional", StringComparison.OrdinalIgnoreCase);
+                continue;
+            }
+
             if (string.Equals(toolName, "search_files", StringComparison.OrdinalIgnoreCase) &&
                 line.StartsWith("search_files query: ", StringComparison.Ordinal))
             {
@@ -172,12 +238,24 @@ public sealed class RuleBasedSessionSummarizer : ISessionSummarizer
             .Select(match => match.Path)
             .ToArray();
 
+        if (!string.IsNullOrWhiteSpace(explicitMainFlowFile))
+        {
+            rankedFiles = rankedFiles
+                .Where(path => !string.Equals(path, explicitMainFlowFile, StringComparison.OrdinalIgnoreCase))
+                .Prepend(explicitMainFlowFile)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(4)
+                .ToArray();
+        }
+
         return new SessionFindings(
             rankedFiles,
+            evidenceQualityEvaluator.SelectPathsForSessionMemory(supportingFiles, 4),
             symbols.Distinct(StringComparer.Ordinal).Take(8).ToArray(),
             operations.Distinct(StringComparer.Ordinal).Take(8).ToArray(),
             limitations.Distinct(StringComparer.Ordinal).Take(3).ToArray(),
-            foundLowValueEvidence);
+            foundLowValueEvidence,
+            hasProvisionalMainFlow);
     }
 
     private static bool TryExtractSearchMatchPath(string value, out string path)
@@ -195,8 +273,10 @@ public sealed class RuleBasedSessionSummarizer : ISessionSummarizer
 
     private sealed record SessionFindings(
         IReadOnlyCollection<string> MainFlowFiles,
+        IReadOnlyCollection<string> SupportingFiles,
         IReadOnlyCollection<string> ImportantSymbols,
         IReadOnlyCollection<string> ObservedOperations,
         IReadOnlyCollection<string> EvidenceLimitations,
-        bool FoundLowValueEvidence);
+        bool FoundLowValueEvidence,
+        bool HasProvisionalMainFlow);
 }
