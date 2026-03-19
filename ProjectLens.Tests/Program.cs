@@ -30,15 +30,21 @@ internal static class Program
             ("SearchFilesTool returns stable readable snippets", ToolTests.SearchFilesToolReturnsReadableSnippetsAsync),
             ("Evidence evaluator penalizes low-value paths", ToolTests.EvidenceEvaluatorPenalizesLowValuePathsAsync),
             ("Evidence evaluator detects weak exact-match evidence", ToolTests.EvidenceEvaluatorDetectsWeakExactMatchEvidenceAsync),
+            ("Evidence evaluator expands feature intent terms in a bounded way", ToolTests.EvidenceEvaluatorExpandsFeatureIntentTermsInBoundedWayAsync),
             ("SearchFilesTool ranks source files above generated artifacts", ToolTests.SearchFilesToolRanksSourceFilesAboveGeneratedArtifactsAsync),
+            ("SearchFilesTool prefers feature-related files over generic setup for feature tracing", ToolTests.SearchFilesToolPrefersFeatureFilesOverGenericSetupAsync),
             ("InMemoryAgentSessionStore saves and loads state", ToolTests.InMemoryAgentSessionStoreSavesAndLoadsStateAsync),
             ("FileBasedAgentSessionStore saves and reloads state across instances", ToolTests.FileBasedAgentSessionStoreSavesAndReloadsStateAcrossInstancesAsync),
             ("FileBasedAgentSessionStore returns null for missing sessions", ToolTests.FileBasedAgentSessionStoreReturnsNullForMissingSessionAsync),
             ("FileBasedAgentSessionStore persists updates for existing sessions", ToolTests.FileBasedAgentSessionStorePersistsLatestValuesAsync),
+            ("FileBasedAgentSessionStore tolerates repeated quick saves for the same session", ToolTests.FileBasedAgentSessionStoreToleratesRepeatedQuickSavesForSameSessionAsync),
             ("FileBasedAgentSessionStore round-trips path-like session ids", ToolTests.FileBasedAgentSessionStoreRoundTripsPathLikeSessionIdsAsync),
             ("RuleBasedFileCompressor preserves actionable structure", ToolTests.RuleBasedFileCompressorPreservesActionableStructureAsync),
             ("RuleBasedSessionSummarizer retains actionable findings", ToolTests.RuleBasedSessionSummarizerRetainsActionableFindingsAsync),
             ("RuleBasedSessionSummarizer excludes noisy artifact-heavy evidence", ToolTests.RuleBasedSessionSummarizerExcludesNoisyArtifactHeavyEvidenceAsync),
+            ("RuleBasedSessionSummarizer retains multi-file aggregation context", ToolTests.RuleBasedSessionSummarizerRetainsMultiFileAggregationContextAsync),
+            ("RuleBasedSessionSummarizer keeps provisional feature flow uncertainty", ToolTests.RuleBasedSessionSummarizerKeepsProvisionalFeatureFlowUncertaintyAsync),
+            ("RuleBasedSessionSummarizer promotes strong feature evidence to main-flow context", ToolTests.RuleBasedSessionSummarizerPromotesStrongFeatureEvidenceToMainFlowContextAsync),
             ("AgentOrchestrator summarizes README and project file", ToolTests.AgentOrchestratorSummarizesWorkspaceAsync),
             ("AgentOrchestrator handles missing optional files", ToolTests.AgentOrchestratorHandlesMissingWorkspaceFilesAsync),
             ("AgentOrchestrator requires registered tools", ToolTests.AgentOrchestratorRequiresRegisteredToolsAsync),
@@ -46,10 +52,13 @@ internal static class Program
             ("AgentOrchestrator chains previous response id after a tool call", ToolTests.AgentOrchestratorChainsPreviousResponseIdAsync),
             ("AgentOrchestrator reuses session state across follow-up prompts", ToolTests.AgentOrchestratorReusesSessionStateAcrossFollowUpPromptsAsync),
             ("AgentOrchestrator uses session context for refactor follow-up", ToolTests.AgentOrchestratorUsesSessionContextForRefactorFollowUpAsync),
+            ("AgentOrchestrator preserves uncertainty for provisional feature follow-up prompts", ToolTests.AgentOrchestratorPreservesUncertaintyForProvisionalFeatureFollowUpPromptsAsync),
             ("AgentOrchestrator persists session state without summarizer", ToolTests.AgentOrchestratorPersistsSessionStateWithoutSummarizerAsync),
             ("AgentOrchestrator refreshes visited file recency", ToolTests.AgentOrchestratorRefreshesVisitedFileRecencyAsync),
             ("AgentOrchestrator curates low-value search evidence from session memory", ToolTests.AgentOrchestratorCuratesLowValueSearchEvidenceFromSessionMemoryAsync),
             ("AgentOrchestrator recovers when exact keyword search evidence is weak", ToolTests.AgentOrchestratorRecoversWhenExactKeywordSearchEvidenceIsWeakAsync),
+            ("AgentOrchestrator aggregates evidence across multiple relevant files", ToolTests.AgentOrchestratorAggregatesEvidenceAcrossMultipleRelevantFilesAsync),
+            ("AgentOrchestrator aggregates controller service and model evidence for feature tracing", ToolTests.AgentOrchestratorAggregatesFeatureTracingEvidenceAcrossRelevantFilesAsync),
             ("AgentOrchestrator prevents duplicate tool calls", ToolTests.AgentOrchestratorPreventsDuplicateToolCallsAsync),
             ("AgentOrchestrator continues after duplicate search prevention", ToolTests.AgentOrchestratorContinuesAfterDuplicateSearchPreventionAsync),
             ("AgentOrchestrator handles a single tool call", ToolTests.AgentOrchestratorHandlesSingleToolCallAsync),
@@ -469,6 +478,20 @@ internal static class ToolTests
         return Task.CompletedTask;
     }
 
+    public static Task EvidenceEvaluatorExpandsFeatureIntentTermsInBoundedWayAsync()
+    {
+        IEvidenceQualityEvaluator evaluator = new RuleBasedEvidenceQualityEvaluator();
+        var expandedTerms = evaluator.ExpandIntentTerms("Trace how blog creation works across the codebase");
+
+        TestAssert.True(evaluator.IsFeatureTracingPrompt("Trace how blog creation works across the codebase"), "The prompt should be recognized as feature tracing.");
+        TestAssert.Contains("blog", string.Join(", ", expandedTerms));
+        TestAssert.Contains("post", string.Join(", ", expandedTerms));
+        TestAssert.Contains("create", string.Join(", ", expandedTerms));
+        TestAssert.Contains("publish", string.Join(", ", expandedTerms));
+        TestAssert.True(expandedTerms.Count <= 10, "Feature-term expansion should stay bounded.");
+        return Task.CompletedTask;
+    }
+
     public static async Task SearchFilesToolRanksSourceFilesAboveGeneratedArtifactsAsync()
     {
         using var workspace = new TestWorkspace();
@@ -491,6 +514,51 @@ internal static class ToolTests
         var match = response.Matches.Single();
 
         TestAssert.Equal("src/AgentOrchestrator.cs", match.Path);
+    }
+
+    public static async Task SearchFilesToolPrefersFeatureFilesOverGenericSetupAsync()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.WriteText(
+            Path.Combine("MyBlog.Api", "Program.cs"),
+            """
+            var builder = WebApplication.CreateBuilder(args);
+            builder.Services.AddAuthentication();
+            builder.Services.AddControllers();
+            """);
+        workspace.WriteText(
+            Path.Combine("MyBlog.Api", "Controllers", "BlogsController.cs"),
+            """
+            public sealed class BlogsController
+            {
+                public async Task<IActionResult> CreateBlog(CreateBlogRequest request)
+                {
+                    return Ok();
+                }
+            }
+            """);
+        workspace.WriteText(
+            Path.Combine("src", "App.jsx"),
+            """
+            async function handlePublish() {
+              await apiRequest('/api/blogs', { method: 'POST' })
+            }
+            """);
+
+        var tool = new SearchFilesTool(workspace.RootPath, new RuleBasedEvidenceQualityEvaluator());
+        var result = await tool.ExecuteAsync(new Dictionary<string, string>
+        {
+            ["query"] = "blog",
+            ["maxResults"] = "3"
+        });
+
+        TestAssert.True(result.Success, "The tool should succeed.");
+        var response = Deserialize<SearchFilesResponse>(result.Output);
+
+        TestAssert.Equal("MyBlog.Api/Controllers/BlogsController.cs", response.Matches.First().Path);
+        TestAssert.False(
+            string.Equals(response.Matches.First().Path, "MyBlog.Api/Program.cs", StringComparison.Ordinal),
+            "Feature tracing should not default to Program.cs.");
     }
 
     public static async Task InMemoryAgentSessionStoreSavesAndLoadsStateAsync()
@@ -592,6 +660,35 @@ internal static class ToolTests
         TestAssert.True(
             reloadedState.UpdatedAtUtc > savedInitialState.UpdatedAtUtc,
             "The updated timestamp should advance on resave.");
+    }
+
+    public static async Task FileBasedAgentSessionStoreToleratesRepeatedQuickSavesForSameSessionAsync()
+    {
+        using var workspace = new TestWorkspace();
+        IAgentSessionStore store = new FileBasedAgentSessionStore(workspace.RootPath);
+
+        var saveTasks = Enumerable.Range(0, 8)
+            .Select(index => store.SaveAsync(new AgentSessionState
+            {
+                SessionId = "session-quick-save",
+                WorkspacePath = "workspace",
+                WorkingSummary = $"Summary {index}",
+                VisitedFiles = [$"file-{index}.cs"],
+                RecentToolHistory = [$"read_file: file-{index}.cs"]
+            }))
+            .ToArray();
+
+        await Task.WhenAll(saveTasks);
+
+        var loadedState = await new FileBasedAgentSessionStore(workspace.RootPath).GetAsync("session-quick-save");
+
+        TestAssert.NotNull(loadedState);
+        TestAssert.True(loadedState!.CreatedAtUtc != default, "CreatedAtUtc should still be populated.");
+        TestAssert.True(loadedState.UpdatedAtUtc != default, "UpdatedAtUtc should still be populated.");
+        TestAssert.True(
+            Enumerable.Range(0, 8).Select(index => $"Summary {index}").Contains(loadedState.WorkingSummary, StringComparer.Ordinal),
+            "One of the repeated saves should persist without throwing.");
+        TestAssert.Equal(1, Directory.GetFiles(Path.Combine(workspace.RootPath, ".sessions"), "*.json").Length);
     }
 
     public static async Task FileBasedAgentSessionStoreRoundTripsPathLikeSessionIdsAsync()
@@ -730,6 +827,112 @@ internal static class ToolTests
             summary.Contains("Visited files: src/AgentOrchestrator.cs, obj/Debug/net8.0/ProjectLens.AssemblyInfo.cs", StringComparison.Ordinal),
             "Low-value visited files should be filtered when higher-quality evidence exists.");
         TestAssert.Contains("Evidence limitations:", summary);
+        return Task.CompletedTask;
+    }
+
+    public static Task RuleBasedSessionSummarizerRetainsMultiFileAggregationContextAsync()
+    {
+        ISessionSummarizer summarizer = new RuleBasedSessionSummarizer(new RuleBasedEvidenceQualityEvaluator());
+        var sessionState = new AgentSessionState
+        {
+            SessionId = "session-aggregation",
+            WorkspacePath = "workspace",
+            WorkingSummary = "Earlier summary.",
+            VisitedFiles = ["src/BlogController.cs", "src/PostService.cs"],
+            RecentToolHistory = ["read_file: BlogController", "read_file: PostService"]
+        };
+
+        var summary = summarizer.UpdateSummary(
+            sessionState,
+            "read_file",
+            """
+            File: src/BlogController.cs
+            Preview: public sealed class BlogController { public Task ShowPostAsync() { ... } }
+            Evidence basis: read_file returned a bounded excerpt of 420 characters; use observed facts from this excerpt and label broader refactor ideas as inferred.
+            Aggregation context:
+            Likely main flow file: src/BlogController.cs
+            Selected file: src/BlogController.cs | reason: Likely main flow file based on the strongest meaningful source match for the current request.
+            Supporting file: src/PostService.cs | reason: Supporting source file selected as additional relevant evidence for the current request.
+            Observed file summary: src/BlogController.cs => BlogController delegates post loading to PostService and returns a page model.
+            Observed file summary: src/PostService.cs => PostService coordinates repository calls and maps the result for the controller.
+            Aggregation limitation: Multi-file aggregation currently covers 2 of 2 selected file(s).
+            """);
+
+        TestAssert.Contains("Likely main flow files: src/BlogController.cs", summary);
+        TestAssert.Contains("Supporting files: src/PostService.cs", summary);
+        TestAssert.Contains("Observed file summary: src/BlogController.cs", summary);
+        TestAssert.Contains("Observed file summary: src/PostService.cs", summary);
+        TestAssert.Contains("Multi-file aggregation currently covers 2 of 2 selected file(s).", summary);
+        return Task.CompletedTask;
+    }
+
+    public static Task RuleBasedSessionSummarizerKeepsProvisionalFeatureFlowUncertaintyAsync()
+    {
+        ISessionSummarizer summarizer = new RuleBasedSessionSummarizer(new RuleBasedEvidenceQualityEvaluator());
+        var sessionState = new AgentSessionState
+        {
+            SessionId = "session-feature-provisional",
+            WorkspacePath = "workspace",
+            WorkingSummary = "Earlier summary.",
+            VisitedFiles = ["MyBlog.Api/Controllers/BlogsController.cs"],
+            RecentToolHistory = ["search_files: blog create"]
+        };
+
+        var summary = summarizer.UpdateSummary(
+            sessionState,
+            "search_files",
+            """
+            search_files query: blog
+            Total matches: 4
+            Evidence basis: search_files returns filename matches and snippets only; file contents have not been fully read yet.
+            Aggregation context:
+            Feature flow confidence: provisional
+            Likely main flow file: MyBlog.Api/Controllers/BlogsController.cs
+            Selected file: MyBlog.Api/Controllers/BlogsController.cs | reason: Likely main flow file based on the strongest meaningful source match for the current request.
+            Supporting file: src/App.jsx | reason: Supporting source file selected as additional relevant evidence for the current request.
+            Supporting file: MyBlog.Api/Models/BlogModels.cs | reason: Supporting source file selected as additional relevant evidence for the current request.
+            Aggregation limitation: Selection is based on ranked search matches and snippets; 0 of 3 selected file(s) have been read so far.
+            Aggregation limitation: Feature flow is still being traced; the current main-flow file is provisional until more supporting files are read.
+            """);
+
+        TestAssert.Contains("Feature flow candidates: MyBlog.Api/Controllers/BlogsController.cs", summary);
+        TestAssert.Contains("Current feature-flow understanding is provisional", summary);
+        TestAssert.Contains("Feature flow is still being traced", summary);
+        return Task.CompletedTask;
+    }
+
+    public static Task RuleBasedSessionSummarizerPromotesStrongFeatureEvidenceToMainFlowContextAsync()
+    {
+        ISessionSummarizer summarizer = new RuleBasedSessionSummarizer(new RuleBasedEvidenceQualityEvaluator());
+        var sessionState = new AgentSessionState
+        {
+            SessionId = "session-feature-strong",
+            WorkspacePath = "workspace",
+            WorkingSummary = "Earlier summary.",
+            VisitedFiles = ["MyBlog.Api/Controllers/BlogsController.cs", "src/App.jsx"],
+            RecentToolHistory = ["read_file: BlogsController", "read_file: App.jsx"]
+        };
+
+        var summary = summarizer.UpdateSummary(
+            sessionState,
+            "read_file",
+            """
+            File: src/App.jsx
+            Evidence basis: read_file returned a bounded excerpt of 320 characters; use observed facts from this excerpt and label broader refactor ideas as inferred.
+            Aggregation context:
+            Feature flow confidence: strong
+            Likely main flow file: MyBlog.Api/Controllers/BlogsController.cs
+            Selected file: MyBlog.Api/Controllers/BlogsController.cs | reason: Likely main flow file based on the strongest meaningful source match for the current request.
+            Supporting file: src/App.jsx | reason: Supporting source file selected as additional relevant evidence for the current request.
+            Observed file summary: MyBlog.Api/Controllers/BlogsController.cs => BlogsController handles blog creation requests.
+            Observed file summary: src/App.jsx => App.jsx submits the publish call to the API.
+            Aggregation limitation: Multi-file aggregation currently covers 2 of 2 selected file(s).
+            """);
+
+        TestAssert.Contains("Likely main flow files: MyBlog.Api/Controllers/BlogsController.cs", summary);
+        TestAssert.False(
+            summary.Contains("Current feature-flow understanding is provisional", StringComparison.Ordinal),
+            "Strong feature evidence should be allowed to become main-flow context.");
         return Task.CompletedTask;
     }
 
@@ -996,6 +1199,65 @@ internal static class ToolTests
         TestAssert.Contains("InstallAsync", secondResponse.Output);
     }
 
+    public static async Task AgentOrchestratorPreservesUncertaintyForProvisionalFeatureFollowUpPromptsAsync()
+    {
+        using var workspace = new TestWorkspace();
+        var sessionStore = new InMemoryAgentSessionStore();
+        await sessionStore.SaveAsync(new AgentSessionState
+        {
+            SessionId = "session-feature-follow-up",
+            WorkspacePath = workspace.RootPath,
+            WorkingSummary =
+                """
+                Feature flow confidence: provisional
+                Feature flow candidates: MyBlog.Api/Controllers/BlogsController.cs, src/App.jsx, MyBlog.Api/Models/BlogModels.cs
+                Evidence limitations: Feature flow is still being traced; the current main-flow file is provisional until more supporting files are read.
+                """,
+            VisitedFiles = ["MyBlog.Api/Controllers/BlogsController.cs", "src/App.jsx"],
+            RecentToolHistory = ["search_files: blog", "read_file: BlogsController"]
+        });
+
+        var modelClient = new ScriptedModelClient(request =>
+        {
+            TestAssert.Contains("The existing feature-flow context is provisional", request.Instructions);
+            TestAssert.Contains("do not treat any candidate file as settled truth yet", request.Instructions);
+            TestAssert.Contains("Feature flow candidates:", request.Instructions);
+
+            return new ModelResponse(
+                """
+                The current feature flow is still provisional.
+                The strongest current candidates are MyBlog.Api/Controllers/BlogsController.cs, src/App.jsx, and MyBlog.Api/Models/BlogModels.cs.
+                A refactor suggestion should stay tentative until one more supporting file confirms the feature path.
+                """,
+                ResponseId: "resp-feature-follow-up");
+        });
+
+        var orchestrator = new AgentOrchestrator(
+            path => new ITool[]
+            {
+                new ListFilesTool(path),
+                new ReadFileTool(path),
+                new SearchFilesTool(path, new RuleBasedEvidenceQualityEvaluator())
+            },
+            modelClient,
+            new AgentOrchestratorOptions { MaxIterations = 3 },
+            sessionStore,
+            new RuleBasedFileCompressor(),
+            new RuleBasedSessionSummarizer(new RuleBasedEvidenceQualityEvaluator()),
+            new RuleBasedEvidenceQualityEvaluator());
+
+        var response = await orchestrator.ProcessAsync(
+            new AgentRequest(
+                "Now suggest a refactor for that flow.",
+                workspace.RootPath,
+                new Dictionary<string, string> { ["sessionId"] = "session-feature-follow-up" }));
+
+        TestAssert.True(response.Success, "The follow-up response should succeed.");
+        TestAssert.Contains("still provisional", response.Output);
+        TestAssert.Contains("strongest current candidates", response.Output);
+        TestAssert.Contains("tentative", response.Output);
+    }
+
     public static async Task AgentOrchestratorPersistsSessionStateWithoutSummarizerAsync()
     {
         using var workspace = new TestWorkspace();
@@ -1257,6 +1519,204 @@ internal static class ToolTests
                 step.Description.Contains("weak search evidence", StringComparison.OrdinalIgnoreCase)) == true,
             "A recovery step should be recorded when the model tries to finalize too early.");
         TestAssert.Equal(3, response.ToolResults?.Count ?? 0);
+    }
+
+    public static async Task AgentOrchestratorAggregatesEvidenceAcrossMultipleRelevantFilesAsync()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.WriteText(
+            Path.Combine("src", "BlogController.cs"),
+            """
+            public sealed class BlogController
+            {
+                private readonly PostService _postService;
+
+                public async Task ShowPostAsync(string slug)
+                {
+                    await _postService.LoadPostAsync(slug);
+                }
+            }
+            """);
+        workspace.WriteText(
+            Path.Combine("src", "PostService.cs"),
+            """
+            public sealed class PostService
+            {
+                private readonly PostRepository _postRepository;
+
+                public async Task<PostModel> LoadPostAsync(string slug)
+                {
+                    return await _postRepository.FindBySlugAsync(slug);
+                }
+            }
+            """);
+        workspace.WriteText(
+            Path.Combine("src", "PostRepository.cs"),
+            """
+            public sealed class PostRepository
+            {
+                public Task<PostModel> FindBySlugAsync(string slug) => Task.FromResult(new PostModel(slug));
+            }
+            """);
+        workspace.WriteText(
+            Path.Combine("src", "UnusedHelper.cs"),
+            """
+            public static class UnusedHelper
+            {
+                public static string FormatPost(string slug) => slug.ToUpperInvariant();
+            }
+            """);
+
+        var evidenceQualityEvaluator = new RuleBasedEvidenceQualityEvaluator();
+        var callCount = 0;
+        var modelClient = new ScriptedModelClient(request =>
+        {
+            callCount++;
+            return callCount switch
+            {
+                1 => new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-search-post",
+                            "search_files",
+                            new Dictionary<string, string>
+                            {
+                                ["query"] = "post",
+                                ["path"] = "."
+                            })
+                    },
+                    ResponseId: "resp-agg-1"),
+                2 => BuildReadRequestFromAggregatedSearch(request),
+                3 => new ModelResponse(
+                    "Grounded final answer: BlogController handles the post flow directly.",
+                    ResponseId: "resp-agg-3"),
+                4 => BuildSupportingReadRequestAfterAggregationPrompt(request),
+                5 => BuildAggregatedFinalResponse(request),
+                _ => throw new InvalidOperationException("Unexpected model invocation.")
+            };
+        });
+
+        var orchestrator = new AgentOrchestrator(
+            path => new ITool[]
+            {
+                new ListFilesTool(path),
+                new ReadFileTool(path),
+                new SearchFilesTool(path, evidenceQualityEvaluator)
+            },
+            modelClient,
+            new AgentOrchestratorOptions { MaxIterations = 6 },
+            evidenceQualityEvaluator: evidenceQualityEvaluator);
+
+        var response = await orchestrator.ProcessAsync(
+            new AgentRequest("Explain the post request flow and architecture", workspace.RootPath));
+
+        TestAssert.True(response.Success, "The orchestrator should aggregate evidence across multiple files.");
+        TestAssert.Contains("Observed facts:", response.Output);
+        TestAssert.Contains("BlogController", response.Output);
+        TestAssert.Contains("PostService", response.Output);
+        TestAssert.Contains("Supporting files:", response.Output);
+        TestAssert.True(
+            response.ExecutionSteps?.Any(step =>
+                step.Description.Contains("multi-file evidence", StringComparison.OrdinalIgnoreCase)) == true,
+            "A multi-file aggregation recovery step should be recorded.");
+        TestAssert.Equal(3, response.ToolResults?.Count ?? 0);
+    }
+
+    public static async Task AgentOrchestratorAggregatesFeatureTracingEvidenceAcrossRelevantFilesAsync()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.WriteText(
+            Path.Combine("MyBlog.Api", "Program.cs"),
+            """
+            var builder = WebApplication.CreateBuilder(args);
+            builder.Services.AddAuthentication();
+            builder.Services.AddControllers();
+            """);
+        workspace.WriteText(
+            Path.Combine("MyBlog.Api", "Controllers", "BlogsController.cs"),
+            """
+            public sealed class BlogsController
+            {
+                public async Task<IActionResult> Create(CreateBlogRequest request)
+                {
+                    var post = new BlogPost(request.Title, request.Content);
+                    return Ok(post);
+                }
+            }
+            """);
+        workspace.WriteText(
+            Path.Combine("MyBlog.Api", "Models", "BlogModels.cs"),
+            """
+            public sealed record CreateBlogRequest(string Title, string Content);
+            public sealed record BlogResponse(Guid Id, string Title, string Content);
+            """);
+        workspace.WriteText(
+            Path.Combine("src", "App.jsx"),
+            """
+            async function handlePublish() {
+              await apiRequest('/api/blogs', { method: 'POST', body: JSON.stringify(blogForm) })
+            }
+            """);
+
+        var evidenceQualityEvaluator = new RuleBasedEvidenceQualityEvaluator();
+        var callCount = 0;
+        var modelClient = new ScriptedModelClient(request =>
+        {
+            callCount++;
+            return callCount switch
+            {
+                1 => new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-search-blog-trace",
+                            "search_files",
+                            new Dictionary<string, string>
+                            {
+                                ["query"] = "blog",
+                                ["path"] = "."
+                            })
+                    },
+                    ResponseId: "resp-feature-1"),
+                2 => BuildReadRequestForFeatureTrace(request),
+                3 => new ModelResponse(
+                    "Grounded final answer: Program.cs appears to control blog creation.",
+                    ResponseId: "resp-feature-3"),
+                4 => BuildFeatureSupportingReadRequest(request),
+                5 => BuildFeatureTraceFinalResponse(request),
+                _ => throw new InvalidOperationException("Unexpected model invocation.")
+            };
+        });
+
+        var orchestrator = new AgentOrchestrator(
+            path => new ITool[]
+            {
+                new ListFilesTool(path),
+                new ReadFileTool(path),
+                new SearchFilesTool(path, evidenceQualityEvaluator)
+            },
+            modelClient,
+            new AgentOrchestratorOptions { MaxIterations = 6 },
+            evidenceQualityEvaluator: evidenceQualityEvaluator);
+
+        var response = await orchestrator.ProcessAsync(
+            new AgentRequest("Trace how blog creation works across the codebase", workspace.RootPath));
+
+        TestAssert.True(response.Success, "Feature tracing should converge on the feature flow files.");
+        TestAssert.Contains("BlogsController", response.Output);
+        TestAssert.True(
+            response.Output.Contains("App.jsx", StringComparison.Ordinal) ||
+            response.Output.Contains("BlogModels", StringComparison.Ordinal) ||
+            response.Output.Contains("frontend and model files", StringComparison.Ordinal),
+            "Feature tracing should incorporate frontend or model-style supporting evidence.");
+        TestAssert.False(
+            response.Output.Contains("Program.cs appears to control blog creation", StringComparison.Ordinal),
+            "Program.cs should not dominate the feature-tracing answer.");
+        TestAssert.True(
+            response.ExecutionSteps?.Any(step =>
+                step.Description.Contains("multi-file evidence", StringComparison.OrdinalIgnoreCase)) == true,
+            "Feature tracing should request supporting evidence before finalizing.");
     }
 
     public static async Task AgentOrchestratorPreventsDuplicateToolCallsAsync()
@@ -1621,6 +2081,188 @@ internal static class ToolTests
                     })
             },
             ResponseId: "resp-weak-3");
+    }
+
+    private static ModelResponse BuildReadRequestFromAggregatedSearch(ModelRequest request)
+    {
+        var searchMessage = request.Conversation
+            .OfType<ModelToolResultMessage>()
+            .Single(message => message.CallId == "call-search-post");
+        var likelyMainFlowFile = ExtractLineValue(searchMessage.Output, "Likely main flow file: ");
+
+        TestAssert.Contains("Aggregation context:", searchMessage.Output);
+        TestAssert.True(
+            string.Equals(likelyMainFlowFile, "src/BlogController.cs", StringComparison.Ordinal) ||
+            string.Equals(likelyMainFlowFile, "src/PostService.cs", StringComparison.Ordinal),
+            "The likely main flow file should be selected from the top application flow files.");
+        var expectedSupportingFlowFile = string.Equals(likelyMainFlowFile, "src/BlogController.cs", StringComparison.Ordinal)
+            ? "src/PostService.cs"
+            : "src/BlogController.cs";
+        TestAssert.Contains($"Supporting file: {expectedSupportingFlowFile}", searchMessage.Output);
+        TestAssert.Contains("Supporting file: src/PostRepository.cs", searchMessage.Output);
+        TestAssert.False(
+            searchMessage.Output.Contains("src/UnusedHelper.cs", StringComparison.Ordinal),
+            "Aggregation should stay bounded to the top relevant files.");
+
+        return new ModelResponse(
+            ToolCalls: new[]
+            {
+                new ModelToolCall(
+                    "call-read-controller",
+                    "read_file",
+                    new Dictionary<string, string>
+                    {
+                        ["path"] = likelyMainFlowFile
+                    })
+            },
+            ResponseId: "resp-agg-2");
+    }
+
+    private static ModelResponse BuildSupportingReadRequestAfterAggregationPrompt(ModelRequest request)
+    {
+        var recoveryPrompt = request.Conversation
+            .OfType<ModelTextMessage>()
+            .Last();
+
+        TestAssert.Contains("Multiple meaningful source files appear relevant.", recoveryPrompt.Content);
+        TestAssert.Contains("supporting file", recoveryPrompt.Content);
+
+        return new ModelResponse(
+            ToolCalls: new[]
+            {
+                new ModelToolCall(
+                    "call-read-support",
+                    "read_file",
+                    new Dictionary<string, string>
+                    {
+                        ["path"] = ExtractFirstSuggestedPath(recoveryPrompt.Content)
+                    })
+            },
+            ResponseId: "resp-agg-4");
+    }
+
+    private static ModelResponse BuildAggregatedFinalResponse(ModelRequest request)
+    {
+        var toolMessages = request.Conversation.OfType<ModelToolResultMessage>().ToArray();
+        var controllerMessage = toolMessages.Single(message => message.CallId == "call-read-controller");
+        var supportingMessage = toolMessages.Single(message => message.CallId == "call-read-support");
+
+        TestAssert.Contains("Observed file summary: src/BlogController.cs", supportingMessage.Output);
+        TestAssert.Contains("Observed file summary: src/PostService.cs", supportingMessage.Output);
+        TestAssert.Contains("Aggregation limitation: Multi-file aggregation currently covers 2 of 3 selected file(s).", supportingMessage.Output);
+        TestAssert.True(
+            controllerMessage.Output.Contains("BlogController", StringComparison.Ordinal) ||
+            controllerMessage.Output.Contains("PostService", StringComparison.Ordinal),
+            "The first read should contribute one of the primary flow files.");
+        TestAssert.Contains("PostService", supportingMessage.Output);
+
+        return new ModelResponse(
+            """
+            Observed facts:
+            - BlogController and PostService jointly define the post request flow.
+            - Supporting files: PostService coordinates the repository call, and PostRepository appears to supply the persisted post data.
+
+            Inferred recommendations:
+            - Keep the controller thin and treat PostService as the orchestration layer for the request flow.
+            """,
+            ResponseId: "resp-agg-5");
+    }
+
+    private static string ExtractLineValue(string content, string prefix)
+    {
+        return content
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .First(line => line.StartsWith(prefix, StringComparison.Ordinal))[prefix.Length..]
+            .Trim();
+    }
+
+    private static ModelResponse BuildReadRequestForFeatureTrace(ModelRequest request)
+    {
+        var searchMessage = request.Conversation
+            .OfType<ModelToolResultMessage>()
+            .Single(message => message.CallId == "call-search-blog-trace");
+
+        TestAssert.Contains("Likely main flow file: MyBlog.Api/Controllers/BlogsController.cs", searchMessage.Output);
+        TestAssert.Contains("Supporting file: src/App.jsx", searchMessage.Output);
+        TestAssert.Contains("Supporting file: MyBlog.Api/Models/BlogModels.cs", searchMessage.Output);
+        TestAssert.False(
+            searchMessage.Output.Contains("Likely main flow file: MyBlog.Api/Program.cs", StringComparison.Ordinal),
+            "Feature tracing should not anchor on Program.cs.");
+
+        return new ModelResponse(
+            ToolCalls: new[]
+            {
+                new ModelToolCall(
+                    "call-read-blog-controller",
+                    "read_file",
+                    new Dictionary<string, string>
+                    {
+                        ["path"] = "MyBlog.Api/Controllers/BlogsController.cs"
+                    })
+            },
+            ResponseId: "resp-feature-2");
+    }
+
+    private static ModelResponse BuildFeatureSupportingReadRequest(ModelRequest request)
+    {
+        var recoveryPrompt = request.Conversation
+            .OfType<ModelTextMessage>()
+            .Last();
+
+        TestAssert.Contains("For feature tracing, prioritize controller/service/model/frontend files", recoveryPrompt.Content);
+        var supportingPath = ExtractFirstSuggestedPath(recoveryPrompt.Content);
+
+        return new ModelResponse(
+            ToolCalls: new[]
+            {
+                new ModelToolCall(
+                    "call-read-blog-ui",
+                    "read_file",
+                    new Dictionary<string, string>
+                    {
+                        ["path"] = supportingPath
+                    })
+            },
+            ResponseId: "resp-feature-4");
+    }
+
+    private static ModelResponse BuildFeatureTraceFinalResponse(ModelRequest request)
+    {
+        var toolMessages = request.Conversation.OfType<ModelToolResultMessage>().ToArray();
+        var controllerMessage = toolMessages.Single(message => message.CallId == "call-read-blog-controller");
+        var uiMessage = toolMessages.Single(message => message.CallId == "call-read-blog-ui");
+        var supportedUiModel = uiMessage.Output.Contains("Observed file summary: src/App.jsx", StringComparison.Ordinal)
+            ? "src/App.jsx"
+            : "MyBlog.Api/Models/BlogModels.cs";
+
+        TestAssert.Contains("BlogsController", controllerMessage.Output);
+        TestAssert.Contains("Observed file summary: MyBlog.Api/Controllers/BlogsController.cs", uiMessage.Output);
+        TestAssert.Contains($"Observed file summary: {supportedUiModel}", uiMessage.Output);
+        TestAssert.Contains("Feature flow is still being traced; the current main-flow file is provisional", controllerMessage.Output);
+
+        return new ModelResponse(
+            """
+            Observed facts:
+            - BlogsController appears to own the API-side blog creation endpoint and constructs the new blog response.
+            - Supporting files include the frontend publish flow and request/response models for the feature.
+
+            Inferred recommendations:
+            - Treat BlogsController as the current main feature-flow file, with frontend and model files as supporting evidence.
+            """,
+            ResponseId: "resp-feature-5");
+    }
+
+    private static string ExtractFirstSuggestedPath(string recoveryPrompt)
+    {
+        const string prefix = "preferably from: ";
+        var startIndex = recoveryPrompt.IndexOf(prefix, StringComparison.Ordinal);
+        if (startIndex < 0)
+        {
+            throw new InvalidOperationException("Expected a preferred supporting-file hint in the recovery prompt.");
+        }
+
+        var value = recoveryPrompt[(startIndex + prefix.Length)..].Trim();
+        return value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)[0];
     }
 
     private static ModelResponse BuildReadRequestAfterDuplicate(ModelRequest request, string duplicateCallId)

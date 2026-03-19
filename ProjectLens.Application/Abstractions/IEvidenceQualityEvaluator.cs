@@ -6,6 +6,10 @@ public interface IEvidenceQualityEvaluator
 
     bool IsMeaningfulSourcePath(string path);
 
+    bool IsFeatureTracingPrompt(string? userPrompt);
+
+    IReadOnlyCollection<string> ExpandIntentTerms(string? userPrompt);
+
     int ScoreFile(
         string path,
         string? snippet = null,
