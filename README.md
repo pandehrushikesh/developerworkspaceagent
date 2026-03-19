@@ -1,10 +1,17 @@
 # ProjectLens - AI-Powered Developer Workspace Agent
 
-ProjectLens is a **.NET 8 AI agent** that analyzes your local codebase using **tool-based orchestration**, **LLM-driven reasoning**, **session-aware memory**, and **grounded follow-up reasoning**.
+ProjectLens is a **.NET 8 AI agent** that analyzes your local codebase using:
+- 🧠 LLM-driven reasoning
+- 🧩 tool-based orchestration
+- 💾 persistent session memory
+- 🔍 multi-file evidence aggregation
+- 🎯 feature-aware reasoning
+- ⚖️ confidence-gated decision making
 
-**ProjectLens lets you ask questions about your codebase—and answers them by actually reading your code.**
+**ProjectLens lets you ask questions about your codebase and answers them by actually reading your code.**
 
 > Built with a clean separation between reasoning (LLM), execution (tools), and control (orchestrator).
+> Think of it as a developer that reads your codebase before answering.
 
 Instead of hardcoded workflows, ProjectLens exposes capabilities through tools and lets the model decide:
 
@@ -13,22 +20,41 @@ Instead of hardcoded workflows, ProjectLens exposes capabilities through tools a
 - how to answer your query
 
 ---
+## 🧠 What Makes ProjectLens Different?
 
-## What Problem Does It Solve?
+Traditional tools:
+- search files
+- return matches  
+
+ProjectLens:
+- decides what to inspect
+- selects relevant files
+- combines evidence across files
+- tracks uncertainty
+- refines answers across steps
+  
+👉 It behaves more like a developer reasoning through code, not a script.
+
+👉 It doesn’t just search code — it understands how pieces connect.
+
+---
+
+## ❓ What Problem Does It Solve?
 
 Developers often ask:
 
 - "What does this repo do?"
 - "Where is this feature implemented?"
-- "Which files are important?"
-- "What changed recently?"
+- "Which files actually matter?"
+- "How does this flow work across files?"
+- "Now refactor that flow"
 
 ProjectLens answers these questions by:
 
 - exploring your workspace
 - reading relevant files
-- reasoning over actual data instead of guessing
-
+- aggregating evidence
+- reasoning over real code (not guesses)
 ---
 
 ## How It Works
@@ -40,7 +66,7 @@ User Prompt
 Agent Orchestrator
      |
      v
-Session Memory (v0.2)
+Session Memory (persistent)
      |
      v
 Model (LLM)
@@ -52,7 +78,10 @@ Tool Calls (if needed)
 Filesystem Tools (list_files, read_file, search_files)
      |
      v
-Compressed Output
+Evidence Scoring + Aggregation
+     |
+     v
+Compressed Context
      |
      v
 Back to Model
@@ -61,84 +90,108 @@ Back to Model
 Final Answer
 
 ```
----
-
-## 🧠 What's New in v0.2 — Stateful Agent
-
-ProjectLens now supports **session-aware interactions**.
-
-This means the agent can:
-
-- remember previously visited files
-- retain recent tool outputs
-- maintain a working summary of the codebase
-- reuse context across follow-up prompts  
-👉 You no longer need to repeat context.
----
-
-## 🧠 What's New in v0.3 — Grounded Reasoning
-
-ProjectLens now improves **trust and accuracy in follow-up responses**.
-
-The agent explicitly distinguishes between:
-
-- ✅ **Observed facts** (from tool outputs)
-- 💡 **Inferred recommendations** (based on partial evidence)
-
-This ensures:
-- no hallucinated implementation details
-- clearer reasoning boundaries
-- more trustworthy refactor/design suggestions
+> 👉 Unlike static analysis tools, ProjectLens dynamically decides what to read next based on evolving evidence.
 
 ---
+## 🧠 Evolution of ProjectLens
+<details>
+<summary><b>Click to see the Evolution of ProjectLens (v0.2 - v0.6)</b></summary>
+     
+### v0.2 — Stateful Agent
 
-### Example
-
-**Prompt 1:**
-Search for unzip logic and explain the flow
-
-**Prompt 2:**
-Now refactor that logic
-
-### Before (v0.2)
-- Refactor suggestions could appear overly confident  
-- Some structure may be assumed  
-
-### Now (v0.3)
-- Clearly states what was actually observed  
-- Clearly labels inferred refactor suggestions  
-- Avoids pretending full knowledge of the repository  
-👉 The agent behaves more like a careful engineer than a guessing assistant.
----
-
-### Example
-
-**Prompt 1:**
-Search for unzip logic and explain the flow
-
-**Prompt 2:**
-Now refactor that logic
-
-👉 The second prompt builds on the first instead of starting from scratch.
+- remembers visited files
+- retains working summary
+- supports follow-up prompts
 
 ---
+### v0.3 — Grounded Reasoning
+
+- separates:
+  - ✅ observed facts
+  - 💡 inferred recommendations
+- reduces hallucination
+- improves trust
+
+---
+### v0.4 — Persistent Memory
+- session memory stored on disk
+- survives process restarts
+- enables long-running analysis
+---
+### 🚀 v0.5 — Evidence Quality Engine
+- filters low-value files (bin/, obj/, etc.)
+- prioritizes meaningful source files
+- improves signal-to-noise ratio
+- prevents noisy artifacts from polluting reasoning
+---
+
+### v0.6 — Multi-File Reasoning + Feature Awareness
+#### 🔍 Multi-file evidence aggregation
+- combines 2–3 relevant files
+- distinguishes:
+  - main flow file
+  - supporting files
+- enables architecture and feature-level understanding
+
+#### 🎯 Feature-intent tracing
+- understands prompts like:
+  - "Trace how blog creation works"
+- biases toward:
+  - controllers
+  - services
+  - models
+  - frontend files
+- avoids drifting into setup/auth code
+
+#### ⚖️ Confidence-gated reasoning
+- distinguishes:
+  - provisional feature hypotheses
+  - strong evidence-backed conclusions
+- prevents:
+  - early wrong guesses becoming “truth”
+
+#### 🔗 Follow-up anchoring
+- resolves prompts like:
+  - "that feature"
+  - "that flow"
+- keeps context anchored to the correct feature
+- avoids drift into unrelated parts (e.g., Program.cs)
+
+---
+</details>
 
 ## 🧩 Context Compression
-
-To handle large files efficiently, ProjectLens compresses file content into:
-
-- File preview
-- Key symbols (classes, methods)
-- Relevant snippets
+ProjectLens compresses file content into:
+- file previews
+- key symbols (classes, methods)
+- relevant snippets
 
 This ensures:
 - efficient token usage
+- faster reasoning
 - better grounding
-- faster reasoning loops
-- clear awareness of evidence limitations
 
 ---
 
+## Example
+
+### 🧪 Real Example
+**Prompt**
+
+Trace how blog creation works across the codebase
+
+**Result**
+
+ProjectLens:
+
+- identifies `BlogsController.cs` as entry point  
+- finds `CreateBlogRequest` in models  
+- connects controller → model → DbContext flow  
+- avoids unrelated setup/auth files like `Program.cs` 
+
+👉 Multi-file reasoning. Fully grounded.
+
+---
 ## Project Structure
 
 | Project | Responsibility |
@@ -176,18 +229,35 @@ This ensures:
 ---
 
 ## 🔧 Features
+
+### 🧠 Core Agent Capabilities
 ✅ Model-driven orchestration loop  
 ✅ Tool-based architecture (extensible)  
+✅ Follow-up prompt support (multi-step reasoning)  
+✅ Testable components  
+
+---
+
+### 🔍 Code Understanding & Reasoning
+✅ Grounded reasoning (observed vs inferred separation)  
+✅ Evidence-aware responses (partial vs full context awareness)  
+✅ Multi-file evidence aggregation  
+✅ Feature-aware reasoning  
+
+---
+
+### 💾 Memory & Context
+✅ Session memory (stateful interactions)  
+✅ Persistent session memory  
+✅ Context compression for large files  
+
+---
+
+### ⚙️ Reliability & Control
+✅ Confidence-gated decision making  
 ✅ Safe filesystem access (workspace-bound)  
 ✅ Clean architecture separation  
-✅ Rule-based fallback (no AI required)  
-✅ Testable components  
-✅ Session memory (stateful interactions)  
-✅ Context compression for large files  
-✅ Follow-up prompt support (multi-step reasoning)  
-✅ Grounded reasoning (observed vs inferred separation)  
-✅ Evidence-aware responses (partial vs full context awareness)
-
+✅ Rule-based fallback (no AI required)    
  
 
 ### 🧠 Intelligent Code Exploration
@@ -205,19 +275,20 @@ This ensures:
 - result limiting for performance
 
 ---
-
 ## ❓ Why ProjectLens?
 
 Traditional scripts:
 - follow fixed steps
+- return raw matches
+- leave interpretation to the user
 
 ProjectLens:
-- dynamically decides what to inspect
-- reasons over real data
-- adapts to different repositories
-- 👉 It behaves more like a developer than a script.
----
+- selects relevant evidence
+- reasons across files
+- adapts to the repository and prompt context
 
+👉 It behaves more like a developer than a script.
+---
 ## Getting Started
 
 ### 1. Clone the repository
@@ -254,10 +325,11 @@ dotnet run --project ProjectLens.Host
 
 Try asking:
 
-- "Summarize this project"
-- "Explain the architecture"
-- "Which files are important?"
-- "What does this repository do?"
+- "Explain the architecture of this repository"
+- "Trace how blog creation works across the codebase"
+- "Which files drive that feature?"
+- "Now refactor that flow"
+  
 ## 🔍 Example: Intelligent Search
 
 ### Prompt:
@@ -269,47 +341,11 @@ Try asking:
 1. Model decides to call `search_files`
 2. Tool scans workspace
 3. Returns matching files + snippets
-4. Model refines answer using actual code  
+4. Model refines answer using actual code
+   
 👉 No guessing. Fully grounded in your codebase.
 
-
 ---
-## 🧪 Real Example (From Live Execution) with using OpenAI API key
-
-### 💬 Prompt:
-"Search for unzip, extract, or archive logic and explain which file contains the main extraction flow."
-### 🤖 Agent Behavior
-- Iteration 1 → search_files  
-- Iteration 2 → refine search_files  
-- Iteration 3 → read_file  
-- Iteration 4 → final answer
-
-### ✅ Final Answer
-The file "Program.cs" contains the main extraction flow for unzip and archive logic.
-It correctly identified:
-- archive discovery logic
-- disk space validation
-- extraction workflow
-- SharpCompress usage
-- helper utilities
----
-
-## 🧪 Follow-Up Example (v0.2)
-
-### Prompt 1:
-Search for unzip logic and explain the flow
-
-### Prompt 2:
-Now refactor that logic
-
-### Behavior:
-- First prompt explores repository
-- Second prompt reuses session memory
-- No need to re-scan entire codebase  
-👉 This enables iterative, **context-aware and grounded developer workflows**.
----
-
-
 ## 🛠️ Available Tools
 
 | Tool          | Description |
@@ -347,21 +383,21 @@ If `ApiKey` or `Model` is not configured, ProjectLens automatically switches to 
 
 ## ⚠️ Current Limitations
 
-- Session memory is **in-memory only** (lost on restart)
-- Summarization is **rule-based**
-- Refactor suggestions are grounded but may remain high-level if evidence is partial
+- No semantic search (rule-based only)
+- Bounded multi-file aggregation (2–3 files)
+- Refactor suggestions may be high-level if evidence is partial
+
 ---
 
 ## 🔮 Future Enhancements
 
-🧠 Deeper grounding via multi-file evidence aggregation  
-💾 Persistent session memory (disk-based)  
-🧬 Git history analysis (commit insights)  
-📊 Code dependency mapping  
-🧠 Semantic code understanding  
-🌐 Web UI  
-⚡ Performance optimization for large repositories  
-
+- 🧠 Semantic code understanding
+- 🧬 Git history analysis
+- 📊 Dependency graphs
+- 🌐 Web UI
+- ⚡ Iteration efficiency optimization
+- 🧠 Smarter convergence control
+  
 ---
 
 ## Core Idea
@@ -388,16 +424,19 @@ If you find this useful:
 - Share feedback
 
 ---
-> From Stateless Exploration → To Stateful Understanding
+> From Stateless Exploration → To Stateful Understanding → To Feature-Aware Reasoning
 ## Final Thought
-- ProjectLens is not just a tool - it is a pattern for building intelligent, safe, and extensible AI agents.
-- Each tool represents a capability boundary.
-- Adding intelligence = adding new tools.
-- No change required in orchestrator.  
-- It doesn’t just explore and remember — it reasons with awareness of its own knowledge boundaries.
----
+
+ProjectLens is not just a tool — it is a pattern for building intelligent, safe, and extensible AI agents.
+
+Each tool represents a capability boundary.
+
+Adding intelligence means adding new capabilities, not rewriting the orchestrator.
+
+It doesn’t just explore and remember — it reasons with awareness of its own knowledge boundaries.
+
 ---
 
 ## 📌 Version
 
-**v0.3 — Grounded Stateful Agent**
+**v0.6 — Feature-Aware Multi-File Reasoning Agent**
