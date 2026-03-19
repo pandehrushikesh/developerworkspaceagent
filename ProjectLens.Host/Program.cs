@@ -17,7 +17,7 @@ try
         modelClient = new OpenAiModelClient(settings.OpenAI);
     }
 
-    IAgentSessionStore sessionStore = new InMemoryAgentSessionStore();
+    IAgentSessionStore sessionStore = new FileBasedAgentSessionStore(AppContext.BaseDirectory);
     IFileCompressor fileCompressor = new RuleBasedFileCompressor();
     ISessionSummarizer sessionSummarizer = new RuleBasedSessionSummarizer();
 

@@ -6,6 +6,10 @@ public sealed record AgentSessionState
 
     public required string WorkspacePath { get; init; }
 
+    public DateTimeOffset CreatedAtUtc { get; init; }
+
+    public DateTimeOffset UpdatedAtUtc { get; init; }
+
     public string WorkingSummary { get; init; } = string.Empty;
 
     public IReadOnlyCollection<string> VisitedFiles { get; init; } = Array.Empty<string>();

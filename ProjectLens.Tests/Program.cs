@@ -29,6 +29,10 @@ internal static class Program
             ("SearchFilesTool skips binary files", ToolTests.SearchFilesToolSkipsBinaryFilesAsync),
             ("SearchFilesTool returns stable readable snippets", ToolTests.SearchFilesToolReturnsReadableSnippetsAsync),
             ("InMemoryAgentSessionStore saves and loads state", ToolTests.InMemoryAgentSessionStoreSavesAndLoadsStateAsync),
+            ("FileBasedAgentSessionStore saves and reloads state across instances", ToolTests.FileBasedAgentSessionStoreSavesAndReloadsStateAcrossInstancesAsync),
+            ("FileBasedAgentSessionStore returns null for missing sessions", ToolTests.FileBasedAgentSessionStoreReturnsNullForMissingSessionAsync),
+            ("FileBasedAgentSessionStore persists updates for existing sessions", ToolTests.FileBasedAgentSessionStorePersistsLatestValuesAsync),
+            ("FileBasedAgentSessionStore round-trips path-like session ids", ToolTests.FileBasedAgentSessionStoreRoundTripsPathLikeSessionIdsAsync),
             ("RuleBasedFileCompressor preserves actionable structure", ToolTests.RuleBasedFileCompressorPreservesActionableStructureAsync),
             ("RuleBasedSessionSummarizer retains actionable findings", ToolTests.RuleBasedSessionSummarizerRetainsActionableFindingsAsync),
             ("AgentOrchestrator summarizes README and project file", ToolTests.AgentOrchestratorSummarizesWorkspaceAsync),
@@ -434,6 +438,116 @@ internal static class ToolTests
         TestAssert.NotNull(loadedState);
         TestAssert.Equal("Summary", loadedState!.WorkingSummary);
         TestAssert.SequenceEqual(new[] { "README.md" }, loadedState.VisitedFiles.ToArray());
+        TestAssert.True(loadedState.CreatedAtUtc != default, "The created timestamp should be populated.");
+        TestAssert.True(loadedState.UpdatedAtUtc != default, "The updated timestamp should be populated.");
+    }
+
+    public static async Task FileBasedAgentSessionStoreSavesAndReloadsStateAcrossInstancesAsync()
+    {
+        using var workspace = new TestWorkspace();
+        var firstStore = new FileBasedAgentSessionStore(workspace.RootPath);
+        var sessionState = new AgentSessionState
+        {
+            SessionId = "session-1",
+            WorkspacePath = "workspace",
+            WorkingSummary = "Summary",
+            VisitedFiles = ["README.md"],
+            RecentToolHistory = ["read_file: README.md"]
+        };
+
+        await firstStore.SaveAsync(sessionState);
+
+        var secondStore = new FileBasedAgentSessionStore(workspace.RootPath);
+        var loadedState = await secondStore.GetAsync("session-1");
+
+        TestAssert.NotNull(loadedState);
+        TestAssert.Equal("Summary", loadedState!.WorkingSummary);
+        TestAssert.SequenceEqual(new[] { "README.md" }, loadedState.VisitedFiles.ToArray());
+        TestAssert.True(loadedState.CreatedAtUtc != default, "The created timestamp should be preserved.");
+        TestAssert.True(loadedState.UpdatedAtUtc != default, "The updated timestamp should be preserved.");
+        TestAssert.True(
+            loadedState.UpdatedAtUtc >= loadedState.CreatedAtUtc,
+            "The updated timestamp should not be earlier than creation.");
+    }
+
+    public static async Task FileBasedAgentSessionStoreReturnsNullForMissingSessionAsync()
+    {
+        using var workspace = new TestWorkspace();
+        IAgentSessionStore store = new FileBasedAgentSessionStore(workspace.RootPath);
+
+        var loadedState = await store.GetAsync("missing-session");
+
+        TestAssert.Null(loadedState);
+    }
+
+    public static async Task FileBasedAgentSessionStorePersistsLatestValuesAsync()
+    {
+        using var workspace = new TestWorkspace();
+        IAgentSessionStore firstStore = new FileBasedAgentSessionStore(workspace.RootPath);
+        var initialState = new AgentSessionState
+        {
+            SessionId = "session-1",
+            WorkspacePath = "workspace",
+            WorkingSummary = "Initial summary",
+            VisitedFiles = ["README.md"],
+            RecentToolHistory = ["read_file: README.md"]
+        };
+
+        await firstStore.SaveAsync(initialState);
+        var savedInitialState = await firstStore.GetAsync("session-1");
+
+        TestAssert.NotNull(savedInitialState);
+
+        await Task.Delay(20);
+
+        IAgentSessionStore secondStore = new FileBasedAgentSessionStore(workspace.RootPath);
+        await secondStore.SaveAsync(savedInitialState! with
+        {
+            WorkingSummary = "Updated summary",
+            VisitedFiles = ["README.md", "src/AgentOrchestrator.cs"],
+            RecentToolHistory = ["search_files: AgentOrchestrator"]
+        });
+
+        var reloadedState = await new FileBasedAgentSessionStore(workspace.RootPath).GetAsync("session-1");
+
+        TestAssert.NotNull(reloadedState);
+        TestAssert.Equal("Updated summary", reloadedState!.WorkingSummary);
+        TestAssert.SequenceEqual(
+            new[] { "README.md", "src/AgentOrchestrator.cs" },
+            reloadedState.VisitedFiles.ToArray());
+        TestAssert.Equal(savedInitialState.CreatedAtUtc, reloadedState.CreatedAtUtc);
+        TestAssert.True(
+            reloadedState.UpdatedAtUtc > savedInitialState.UpdatedAtUtc,
+            "The updated timestamp should advance on resave.");
+    }
+
+    public static async Task FileBasedAgentSessionStoreRoundTripsPathLikeSessionIdsAsync()
+    {
+        using var workspace = new TestWorkspace();
+        var sessionId = @"C:\repo\feature/branch:session?name=*demo*";
+        IAgentSessionStore store = new FileBasedAgentSessionStore(workspace.RootPath);
+        var sessionState = new AgentSessionState
+        {
+            SessionId = sessionId,
+            WorkspacePath = "workspace",
+            WorkingSummary = "Path-like id summary",
+            VisitedFiles = ["README.md"],
+            RecentToolHistory = ["read_file: README.md"]
+        };
+
+        await store.SaveAsync(sessionState);
+        var loadedState = await new FileBasedAgentSessionStore(workspace.RootPath).GetAsync(sessionId);
+        var sessionFiles = Directory.GetFiles(Path.Combine(workspace.RootPath, ".sessions"), "*.json");
+
+        TestAssert.NotNull(loadedState);
+        TestAssert.Equal(sessionId, loadedState!.SessionId);
+        TestAssert.Equal(1, sessionFiles.Length);
+        TestAssert.False(
+            Path.GetFileName(sessionFiles[0]).Contains(Path.DirectorySeparatorChar, StringComparison.Ordinal),
+            "The persisted file name should be safe.");
+        TestAssert.False(
+            Path.GetFileName(sessionFiles[0]).Contains(Path.AltDirectorySeparatorChar, StringComparison.Ordinal),
+            "The persisted file name should be safe.");
     }
 
     public static Task RuleBasedFileCompressorPreservesActionableStructureAsync()
