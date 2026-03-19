@@ -24,12 +24,31 @@ public sealed class InMemoryAgentSessionStore : IAgentSessionStore
         ArgumentNullException.ThrowIfNull(sessionState);
 
         cancellationToken.ThrowIfCancellationRequested();
-        _sessions[sessionState.SessionId] = sessionState with
+        var now = DateTimeOffset.UtcNow;
+        var createdAtUtc = sessionState.CreatedAtUtc == default ? now : sessionState.CreatedAtUtc;
+
+        _sessions.AddOrUpdate(
+            sessionState.SessionId,
+            _ => Clone(sessionState, createdAtUtc, now),
+            (_, existing) => Clone(
+                sessionState,
+                existing.CreatedAtUtc == default ? createdAtUtc : existing.CreatedAtUtc,
+                now));
+
+        return Task.CompletedTask;
+    }
+
+    private static AgentSessionState Clone(
+        AgentSessionState sessionState,
+        DateTimeOffset createdAtUtc,
+        DateTimeOffset updatedAtUtc)
+    {
+        return sessionState with
         {
+            CreatedAtUtc = createdAtUtc,
+            UpdatedAtUtc = updatedAtUtc,
             VisitedFiles = sessionState.VisitedFiles.ToArray(),
             RecentToolHistory = sessionState.RecentToolHistory.ToArray()
         };
-
-        return Task.CompletedTask;
     }
 }
