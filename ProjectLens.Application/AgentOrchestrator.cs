@@ -505,6 +505,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             Use tool calls only when they materially help answer the user's request.
             Do not repeat the same tool call with the same arguments unless the earlier results were clearly insufficient.
             After search_files returns likely matches, prefer read_file on the most relevant result instead of repeating search_files.
+            search_files may return hybrid candidates that combine exact keyword matches with bounded semantic chunk matches for conceptual queries; treat semantic hits as grounded candidate proposals, not as full-file proof.
             If multiple meaningful source files appear relevant to a logic, flow, architecture, or refactor question, inspect up to 2-3 of the top files and synthesize across them before finalizing.
             Distinguish the likely main flow file from supporting files when multiple files contribute to the answer.
             For feature-tracing prompts, prefer files closest to the requested feature intent such as feature-related controllers, services, entities/models, and frontend/API consumers.
@@ -624,12 +625,24 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             var totalMatches = root.TryGetProperty("TotalMatches", out var totalMatchesElement)
                 ? totalMatchesElement.GetInt32()
                 : 0;
+            var retrievalMode = root.TryGetProperty("RetrievalMode", out var retrievalModeElement)
+                ? retrievalModeElement.GetString() ?? "keyword"
+                : "keyword";
+            var keywordMatchCount = root.TryGetProperty("KeywordMatchCount", out var keywordCountElement)
+                ? keywordCountElement.GetInt32()
+                : totalMatches;
+            var semanticMatchCount = root.TryGetProperty("SemanticMatchCount", out var semanticCountElement)
+                ? semanticCountElement.GetInt32()
+                : 0;
             var matches = root.TryGetProperty("Matches", out var matchesElement)
                 ? matchesElement.EnumerateArray()
                     .Select(match => new EvidenceMatch(
                         match.TryGetProperty("Path", out var pathElement) ? pathElement.GetString() ?? string.Empty : string.Empty,
                         match.TryGetProperty("Snippet", out var snippetElement) ? snippetElement.GetString() ?? string.Empty : string.Empty,
-                        match.TryGetProperty("LineNumber", out var lineNumberElement) ? lineNumberElement.GetInt32() : 0))
+                        match.TryGetProperty("LineNumber", out var lineNumberElement) ? lineNumberElement.GetInt32() : 0,
+                        match.TryGetProperty("MatchKind", out var matchKindElement) ? matchKindElement.GetString() ?? "keyword" : "keyword",
+                        match.TryGetProperty("SimilarityScore", out var similarityElement) ? similarityElement.GetDouble() : 0,
+                        match.TryGetProperty("EndLineNumber", out var endLineNumberElement) ? endLineNumberElement.GetInt32() : 0))
                     .Where(match => !string.IsNullOrWhiteSpace(match.Path))
                     .ToArray()
                 : Array.Empty<EvidenceMatch>();
@@ -640,7 +653,8 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             var builder = new StringBuilder();
             builder.AppendLine($"search_files query: {query}");
             builder.AppendLine($"Total matches: {totalMatches}");
-            builder.AppendLine("Evidence basis: search_files returns filename matches and snippets only; file contents have not been fully read yet.");
+            builder.AppendLine($"Retrieval mode: {retrievalMode} (keyword candidates: {keywordMatchCount}, semantic candidates: {semanticMatchCount})");
+            builder.AppendLine("Evidence basis: search_files returns bounded filename/snippet candidates only; semantic matches come from chunk-level similarity and still require read_file before making file-level claims.");
 
             if (searchEvidence.IsWeakEvidence)
             {
@@ -649,7 +663,10 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
 
             foreach (var match in searchEvidence.RankedMatches)
             {
-                builder.AppendLine($"- {match.Path}: {match.Snippet}");
+                var semanticSuffix = match.MatchKind.Equals("semantic", StringComparison.OrdinalIgnoreCase)
+                    ? $" [semantic {match.SimilarityScore:F2}]"
+                    : string.Empty;
+                builder.AppendLine($"- {match.Path}{semanticSuffix}: {match.Snippet}");
             }
 
             return builder.ToString().TrimEnd();

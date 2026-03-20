@@ -7,4 +7,7 @@ public sealed record SearchFilesResponse(
     bool CaseSensitive,
     int MaxResults,
     int TotalMatches,
-    IReadOnlyCollection<SearchFileMatch> Matches);
+    IReadOnlyCollection<SearchFileMatch> Matches,
+    string RetrievalMode = "keyword",
+    int KeywordMatchCount = 0,
+    int SemanticMatchCount = 0);
