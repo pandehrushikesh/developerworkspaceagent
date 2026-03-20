@@ -25,6 +25,27 @@ public sealed class RuleBasedEvidenceQualityEvaluator : IEvidenceQualityEvaluato
         "end-to-end"
     ];
 
+    private static readonly string[] ConceptualSearchSignals =
+    [
+        "how",
+        "where",
+        "what",
+        "which",
+        "works",
+        "work",
+        "saved",
+        "save",
+        "persist",
+        "validation",
+        "validate",
+        "handles",
+        "handle",
+        "publishing",
+        "publish",
+        "login",
+        "token"
+    ];
+
     private static readonly string[] LowValueSegments =
     [
         "bin",
@@ -118,6 +139,23 @@ public sealed class RuleBasedEvidenceQualityEvaluator : IEvidenceQualityEvaluato
 
         var normalizedPrompt = userPrompt.ToLowerInvariant();
         return FeatureTracingSignals.Any(signal => normalizedPrompt.Contains(signal, StringComparison.Ordinal));
+    }
+
+    public bool IsConceptualQuery(string? userPrompt)
+    {
+        if (string.IsNullOrWhiteSpace(userPrompt))
+        {
+            return false;
+        }
+
+        if (Regex.IsMatch(userPrompt, @"[\w\-/\\]+\.[A-Za-z0-9]+") ||
+            Regex.IsMatch(userPrompt, @"\b[A-Z][a-z0-9_]+[A-Z][A-Za-z0-9_]*\b"))
+        {
+            return false;
+        }
+
+        var normalizedPrompt = userPrompt.ToLowerInvariant();
+        return ConceptualSearchSignals.Any(signal => normalizedPrompt.Contains(signal, StringComparison.Ordinal));
     }
 
     public IReadOnlyCollection<string> ExpandIntentTerms(string? userPrompt)
@@ -218,6 +256,7 @@ public sealed class RuleBasedEvidenceQualityEvaluator : IEvidenceQualityEvaluato
 
         score += ScorePromptRelevance(normalizedPath, snippet, userPrompt);
         score += ScoreFeatureIntentAlignment(normalizedPath, snippet, userPrompt);
+        score += ScoreRetrievalSignal(snippet, userPrompt);
         return score;
     }
 
@@ -231,7 +270,7 @@ public sealed class RuleBasedEvidenceQualityEvaluator : IEvidenceQualityEvaluato
         var ranked = matches
             .Select((match, index) => new RankedMatch(
                 match,
-                ScoreFile(match.Path, match.Snippet, userPrompt),
+                ScoreFile(match.Path, match.Snippet, userPrompt) + ScoreMatchSignal(match),
                 IsLowValuePath(match.Path),
                 index))
             .OrderByDescending(item => item.Score)
@@ -421,6 +460,35 @@ public sealed class RuleBasedEvidenceQualityEvaluator : IEvidenceQualityEvaluato
         }
 
         return Math.Max(score, -60);
+    }
+
+    private static int ScoreMatchSignal(EvidenceMatch match)
+    {
+        return match.MatchKind.Equals("semantic", StringComparison.OrdinalIgnoreCase)
+            ? 10 + (int)Math.Round(Math.Clamp(match.SimilarityScore, 0, 1) * 20)
+            : 0;
+    }
+
+    private static int ScoreRetrievalSignal(string? snippet, string? userPrompt)
+    {
+        if (string.IsNullOrWhiteSpace(snippet) || string.IsNullOrWhiteSpace(userPrompt))
+        {
+            return 0;
+        }
+
+        if (snippet.Contains("semantic", StringComparison.OrdinalIgnoreCase) &&
+            IsConceptualSignalPresent(userPrompt))
+        {
+            return 6;
+        }
+
+        return 0;
+    }
+
+    private static bool IsConceptualSignalPresent(string userPrompt)
+    {
+        var normalizedPrompt = userPrompt.ToLowerInvariant();
+        return ConceptualSearchSignals.Any(signal => normalizedPrompt.Contains(signal, StringComparison.Ordinal));
     }
 
     private static IEnumerable<string> Tokenize(string value)

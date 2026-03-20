@@ -8,6 +8,8 @@ public interface IEvidenceQualityEvaluator
 
     bool IsFeatureTracingPrompt(string? userPrompt);
 
+    bool IsConceptualQuery(string? userPrompt);
+
     IReadOnlyCollection<string> ExpandIntentTerms(string? userPrompt);
 
     int ScoreFile(

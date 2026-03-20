@@ -2,6 +2,7 @@ using ProjectLens.Application;
 using ProjectLens.Application.Abstractions;
 using ProjectLens.Domain;
 using ProjectLens.Infrastructure;
+using ProjectLens.Infrastructure.SemanticSearch;
 using ProjectLens.Infrastructure.Tools;
 using ProjectLens.Infrastructure.Tools.Models;
 using System.Text.Json;
@@ -31,6 +32,9 @@ internal static class Program
             ("Evidence evaluator penalizes low-value paths", ToolTests.EvidenceEvaluatorPenalizesLowValuePathsAsync),
             ("Evidence evaluator detects weak exact-match evidence", ToolTests.EvidenceEvaluatorDetectsWeakExactMatchEvidenceAsync),
             ("Evidence evaluator expands feature intent terms in a bounded way", ToolTests.EvidenceEvaluatorExpandsFeatureIntentTermsInBoundedWayAsync),
+            ("Semantic search returns relevant chunks for conceptual queries", ToolTests.SemanticSearchReturnsRelevantChunksForConceptualQueriesAsync),
+            ("SearchFilesTool uses hybrid retrieval for conceptual queries", ToolTests.SearchFilesToolUsesHybridRetrievalForConceptualQueriesAsync),
+            ("SearchFilesTool keeps semantic retrieval bounded by top K", ToolTests.SearchFilesToolKeepsSemanticRetrievalBoundedByTopKAsync),
             ("SearchFilesTool ranks source files above generated artifacts", ToolTests.SearchFilesToolRanksSourceFilesAboveGeneratedArtifactsAsync),
             ("SearchFilesTool prefers feature-related files over generic setup for feature tracing", ToolTests.SearchFilesToolPrefersFeatureFilesOverGenericSetupAsync),
             ("InMemoryAgentSessionStore saves and loads state", ToolTests.InMemoryAgentSessionStoreSavesAndLoadsStateAsync),
@@ -60,6 +64,7 @@ internal static class Program
             ("AgentOrchestrator refreshes visited file recency", ToolTests.AgentOrchestratorRefreshesVisitedFileRecencyAsync),
             ("AgentOrchestrator curates low-value search evidence from session memory", ToolTests.AgentOrchestratorCuratesLowValueSearchEvidenceFromSessionMemoryAsync),
             ("AgentOrchestrator recovers when exact keyword search evidence is weak", ToolTests.AgentOrchestratorRecoversWhenExactKeywordSearchEvidenceIsWeakAsync),
+            ("AgentOrchestrator benefits from semantic retrieval without extra search loops", ToolTests.AgentOrchestratorBenefitsFromSemanticRetrievalWithoutExtraSearchLoopsAsync),
             ("AgentOrchestrator aggregates evidence across multiple relevant files", ToolTests.AgentOrchestratorAggregatesEvidenceAcrossMultipleRelevantFilesAsync),
             ("AgentOrchestrator aggregates controller service and model evidence for feature tracing", ToolTests.AgentOrchestratorAggregatesFeatureTracingEvidenceAcrossRelevantFilesAsync),
             ("AgentOrchestrator prevents duplicate tool calls", ToolTests.AgentOrchestratorPreventsDuplicateToolCallsAsync),
@@ -493,6 +498,115 @@ internal static class ToolTests
         TestAssert.Contains("publish", string.Join(", ", expandedTerms));
         TestAssert.True(expandedTerms.Count <= 10, "Feature-term expansion should stay bounded.");
         return Task.CompletedTask;
+    }
+
+    public static async Task SemanticSearchReturnsRelevantChunksForConceptualQueriesAsync()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.WriteText(
+            Path.Combine("src", "Security", "SessionAuthService.cs"),
+            """
+            public sealed class SessionAuthService
+            {
+                public async Task<AuthSession> AuthenticateCredentialsAsync(Credentials credentials)
+                {
+                    return await _tokenIssuer.IssueAsync(credentials);
+                }
+            }
+            """);
+        workspace.WriteText(
+            Path.Combine("src", "Posts", "PostPublisher.cs"),
+            """
+            public sealed class PostPublisher
+            {
+                public Task PublishAsync(PostDraft draft) => Task.CompletedTask;
+            }
+            """);
+
+        ISemanticSearchService service = new LocalSemanticSearchService(
+            workspace.RootPath,
+            new DeterministicEmbeddingService());
+
+        var results = await service.SearchAsync("How does login work?", workspace.RootPath, "*", 3);
+
+        TestAssert.True(results.Count > 0, "Semantic search should return at least one candidate.");
+        TestAssert.Equal("src/Security/SessionAuthService.cs", results.First().Path);
+        TestAssert.True(results.First().SimilarityScore > 0, "Semantic matches should include a similarity score.");
+    }
+
+    public static async Task SearchFilesToolUsesHybridRetrievalForConceptualQueriesAsync()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.WriteText(
+            Path.Combine("src", "Security", "JwtGuard.cs"),
+            """
+            public sealed class JwtGuard
+            {
+                public ClaimsPrincipal VerifyBearer(string bearerValue)
+                {
+                    return _tokenReader.Read(bearerValue);
+                }
+            }
+            """);
+        workspace.WriteText(
+            Path.Combine("src", "Content", "ContentStore.cs"),
+            """
+            public sealed class ContentStore
+            {
+                public Task WriteDraftAsync(ContentDraft draft) => Task.CompletedTask;
+            }
+            """);
+
+        var tool = new SearchFilesTool(
+            workspace.RootPath,
+            new RuleBasedEvidenceQualityEvaluator(),
+            new LocalSemanticSearchService(workspace.RootPath, new DeterministicEmbeddingService()));
+        var result = await tool.ExecuteAsync(new Dictionary<string, string>
+        {
+            ["query"] = "What handles token validation?",
+            ["maxResults"] = "3"
+        });
+
+        TestAssert.True(result.Success, "The tool should succeed.");
+        var response = Deserialize<SearchFilesResponse>(result.Output);
+
+        TestAssert.True(
+            response.RetrievalMode is "semantic" or "hybrid",
+            "Conceptual retrieval should activate semantic search.");
+        TestAssert.Equal("src/Security/JwtGuard.cs", response.Matches.First().Path);
+        TestAssert.True(
+            response.Matches.First().MatchKind is "semantic" or "keyword",
+            "The result should stay grounded as a bounded candidate match.");
+    }
+
+    public static async Task SearchFilesToolKeepsSemanticRetrievalBoundedByTopKAsync()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.WriteText(
+            Path.Combine("src", "Publishing", "DraftWriter.cs"),
+            "public sealed class DraftWriter { public Task StoreAsync(Draft draft) => Task.CompletedTask; }");
+        workspace.WriteText(
+            Path.Combine("src", "Publishing", "PostPublisher.cs"),
+            "public sealed class PostPublisher { public Task ReleaseAsync(PostDraft draft) => Task.CompletedTask; }");
+        workspace.WriteText(
+            Path.Combine("src", "Publishing", "AuditTrail.cs"),
+            "public sealed class AuditTrail { public void Record(string message) { } }");
+
+        var tool = new SearchFilesTool(
+            workspace.RootPath,
+            new RuleBasedEvidenceQualityEvaluator(),
+            new LocalSemanticSearchService(workspace.RootPath, new DeterministicEmbeddingService()));
+        var result = await tool.ExecuteAsync(new Dictionary<string, string>
+        {
+            ["query"] = "Where is content saved?",
+            ["maxResults"] = "2"
+        });
+
+        TestAssert.True(result.Success, "The tool should succeed.");
+        var response = Deserialize<SearchFilesResponse>(result.Output);
+
+        TestAssert.Equal(2, response.Matches.Count);
+        TestAssert.True(response.SemanticMatchCount <= 2, "Semantic retrieval should stay within the bounded top-K budget.");
     }
 
     public static async Task SearchFilesToolRanksSourceFilesAboveGeneratedArtifactsAsync()
@@ -1498,6 +1612,71 @@ internal static class ToolTests
         TestAssert.SequenceEqual(new[] { "docs.txt", "README.md" }, savedState!.VisitedFiles.ToArray());
     }
 
+    public static async Task AgentOrchestratorBenefitsFromSemanticRetrievalWithoutExtraSearchLoopsAsync()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.WriteText(
+            Path.Combine("src", "Security", "SessionAuthService.cs"),
+            """
+            public sealed class SessionAuthService
+            {
+                public async Task<AuthSession> AuthenticateCredentialsAsync(Credentials credentials)
+                {
+                    return await _tokenIssuer.IssueAsync(credentials);
+                }
+            }
+            """);
+
+        var callCount = 0;
+        var modelClient = new ScriptedModelClient(request =>
+        {
+            callCount++;
+            return callCount switch
+            {
+                1 => new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-search-login",
+                            "search_files",
+                            new Dictionary<string, string>
+                            {
+                                ["query"] = "How does login work?",
+                                ["path"] = "."
+                            })
+                    },
+                    ResponseId: "resp-semantic-1"),
+                2 => new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-read-login",
+                            "read_file",
+                            new Dictionary<string, string>
+                            {
+                                ["path"] = "src/Security/SessionAuthService.cs"
+                            })
+                    },
+                    ResponseId: "resp-semantic-2"),
+                3 => BuildFinalResponseAfterTool(
+                    request,
+                    "call-read-login",
+                    "AuthenticateCredentialsAsync",
+                    responseId: "resp-semantic-3"),
+                _ => throw new InvalidOperationException("Unexpected model invocation.")
+            };
+        });
+
+        var orchestrator = CreateOrchestrator(workspace.RootPath, modelClient);
+        var response = await orchestrator.ProcessAsync(
+            new AgentRequest("How does login work?", workspace.RootPath));
+
+        TestAssert.True(response.Success, "The orchestrator should succeed with bounded hybrid retrieval.");
+        TestAssert.Contains("AuthenticateCredentialsAsync", response.Output);
+        TestAssert.Equal(2, response.ToolResults?.Count ?? 0);
+        TestAssert.Equal(3, callCount);
+    }
+
     public static async Task AgentOrchestratorCuratesLowValueSearchEvidenceFromSessionMemoryAsync()
     {
         using var workspace = new TestWorkspace();
@@ -2103,13 +2282,17 @@ internal static class ToolTests
         AgentOrchestratorOptions? options = null)
     {
         var evidenceQualityEvaluator = new RuleBasedEvidenceQualityEvaluator();
+        var embeddingService = new DeterministicEmbeddingService();
 
         return new AgentOrchestrator(
             path => new ITool[]
             {
                 new ListFilesTool(path),
                 new ReadFileTool(path),
-                new SearchFilesTool(path, evidenceQualityEvaluator)
+                new SearchFilesTool(
+                    path,
+                    evidenceQualityEvaluator,
+                    new LocalSemanticSearchService(path, embeddingService))
             },
             modelClient,
             options,

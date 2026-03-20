@@ -4,6 +4,7 @@ using ProjectLens.Application.Abstractions;
 using ProjectLens.Domain;
 using ProjectLens.Infrastructure;
 using ProjectLens.Infrastructure.OpenAI;
+using ProjectLens.Infrastructure.SemanticSearch;
 using ProjectLens.Infrastructure.Tools;
 
 try
@@ -19,6 +20,9 @@ try
 
     IAgentSessionStore sessionStore = new FileBasedAgentSessionStore(AppContext.BaseDirectory);
     IEvidenceQualityEvaluator evidenceQualityEvaluator = new RuleBasedEvidenceQualityEvaluator();
+    IEmbeddingService embeddingService = settings.OpenAI.IsEmbeddingConfigured
+        ? new OpenAiEmbeddingService(settings.OpenAI)
+        : new DeterministicEmbeddingService();
     IFileCompressor fileCompressor = new RuleBasedFileCompressor();
     IPromptClarifier promptClarifier = new RuleBasedPromptClarifier();
     ISessionSummarizer sessionSummarizer = new RuleBasedSessionSummarizer(evidenceQualityEvaluator);
@@ -28,7 +32,10 @@ try
         {
             new ListFilesTool(workspacePath),
             new ReadFileTool(workspacePath),
-            new SearchFilesTool(workspacePath, evidenceQualityEvaluator)
+            new SearchFilesTool(
+                workspacePath,
+                evidenceQualityEvaluator,
+                new LocalSemanticSearchService(workspacePath, embeddingService))
         },
         modelClient,
         new AgentOrchestratorOptions
