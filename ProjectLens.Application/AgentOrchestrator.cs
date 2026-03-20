@@ -17,6 +17,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
     private readonly IEvidenceQualityEvaluator? _evidenceQualityEvaluator;
     private readonly IModelClient? _modelClient;
     private readonly AgentOrchestratorOptions _options;
+    private readonly IPromptClarifier _promptClarifier;
     private readonly IAgentSessionStore? _sessionStore;
     private readonly ISessionSummarizer? _sessionSummarizer;
     private readonly Func<string, IReadOnlyDictionary<string, ITool>> _toolFactory;
@@ -28,8 +29,9 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         IAgentSessionStore? sessionStore = null,
         IFileCompressor? fileCompressor = null,
         ISessionSummarizer? sessionSummarizer = null,
-        IEvidenceQualityEvaluator? evidenceQualityEvaluator = null)
-        : this(_ => tools, modelClient, options, sessionStore, fileCompressor, sessionSummarizer, evidenceQualityEvaluator)
+        IEvidenceQualityEvaluator? evidenceQualityEvaluator = null,
+        IPromptClarifier? promptClarifier = null)
+        : this(_ => tools, modelClient, options, sessionStore, fileCompressor, sessionSummarizer, evidenceQualityEvaluator, promptClarifier)
     {
     }
 
@@ -40,7 +42,8 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         IAgentSessionStore? sessionStore = null,
         IFileCompressor? fileCompressor = null,
         ISessionSummarizer? sessionSummarizer = null,
-        IEvidenceQualityEvaluator? evidenceQualityEvaluator = null)
+        IEvidenceQualityEvaluator? evidenceQualityEvaluator = null,
+        IPromptClarifier? promptClarifier = null)
     {
         ArgumentNullException.ThrowIfNull(toolFactory);
 
@@ -48,6 +51,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         _fileCompressor = fileCompressor;
         _modelClient = modelClient;
         _options = options ?? new AgentOrchestratorOptions();
+        _promptClarifier = promptClarifier ?? new RuleBasedPromptClarifier();
         _sessionStore = sessionStore;
         _sessionSummarizer = sessionSummarizer;
         if (_options.MaxIterations < 1)
@@ -102,6 +106,14 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         {
             steps.Add(new AgentExecutionStep(
                 $"Loaded session '{sessionState.SessionId}' with {sessionState.VisitedFiles.Count} visited file(s)."));
+        }
+
+        var clarification = _promptClarifier.GetClarification(request.UserPrompt, sessionState);
+        if (clarification is not null)
+        {
+            steps.Add(new AgentExecutionStep(
+                "Prompt is ambiguous; asking for clarification before tool exploration."));
+            return new AgentResponse(clarification.Question, steps, toolResults);
         }
 
         var conversation = new List<ModelConversationItem>

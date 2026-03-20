@@ -47,6 +47,9 @@ internal static class Program
             ("RuleBasedSessionSummarizer promotes strong feature evidence to main-flow context", ToolTests.RuleBasedSessionSummarizerPromotesStrongFeatureEvidenceToMainFlowContextAsync),
             ("AgentOrchestrator summarizes README and project file", ToolTests.AgentOrchestratorSummarizesWorkspaceAsync),
             ("AgentOrchestrator handles missing optional files", ToolTests.AgentOrchestratorHandlesMissingWorkspaceFilesAsync),
+            ("AgentOrchestrator asks for clarification on ambiguous prompts", ToolTests.AgentOrchestratorAsksForClarificationOnAmbiguousPromptsAsync),
+            ("AgentOrchestrator uses recent session context in clarification questions", ToolTests.AgentOrchestratorUsesRecentSessionContextInClarificationQuestionsAsync),
+            ("AgentOrchestrator keeps clear prompts moving without clarification", ToolTests.AgentOrchestratorKeepsClearPromptsMovingWithoutClarificationAsync),
             ("AgentOrchestrator requires registered tools", ToolTests.AgentOrchestratorRequiresRegisteredToolsAsync),
             ("AgentOrchestrator returns final answer without tool call", ToolTests.AgentOrchestratorReturnsFinalAnswerWithoutToolCallAsync),
             ("AgentOrchestrator chains previous response id after a tool call", ToolTests.AgentOrchestratorChainsPreviousResponseIdAsync),
@@ -982,6 +985,122 @@ internal static class ToolTests
         TestAssert.Contains("README.md was not available", response.Output);
         TestAssert.Contains("No .csproj file was available", response.Output);
         TestAssert.Equal(1, response.ToolResults?.Count ?? 0);
+    }
+
+    public static async Task AgentOrchestratorAsksForClarificationOnAmbiguousPromptsAsync()
+    {
+        using var workspace = new TestWorkspace();
+        var modelClient = new ScriptedModelClient(_ =>
+            throw new InvalidOperationException("The model should not be called for an ambiguous prompt."));
+
+        var orchestrator = new AgentOrchestrator(
+            path => new ITool[]
+            {
+                new ListFilesTool(path),
+                new ReadFileTool(path),
+                new SearchFilesTool(path)
+            },
+            modelClient,
+            new AgentOrchestratorOptions { MaxIterations = 3 },
+            promptClarifier: new RuleBasedPromptClarifier());
+
+        var response = await orchestrator.ProcessAsync(
+            new AgentRequest("Explain the flow", workspace.RootPath));
+
+        TestAssert.True(response.Success, "The orchestrator should return a clarification question.");
+        TestAssert.Contains("Which feature, file, or flow", response.Output);
+        TestAssert.Equal(0, response.ToolResults?.Count ?? 0);
+        TestAssert.True(
+            response.ExecutionSteps?.Any(step =>
+                step.Description.Contains("asking for clarification", StringComparison.OrdinalIgnoreCase)) == true,
+            "The orchestrator should record that clarification was requested.");
+    }
+
+    public static async Task AgentOrchestratorUsesRecentSessionContextInClarificationQuestionsAsync()
+    {
+        using var workspace = new TestWorkspace();
+        var sessionStore = new InMemoryAgentSessionStore();
+        await sessionStore.SaveAsync(new AgentSessionState
+        {
+            SessionId = "session-clarify-context",
+            WorkspacePath = workspace.RootPath,
+            WorkingSummary =
+                """
+                Feature flow confidence: provisional
+                Feature flow candidates: MyBlog.Api/Controllers/BlogsController.cs, MyBlog.Api/Controllers/AuthController.cs
+                Supporting files: src/App.jsx
+                """,
+            VisitedFiles =
+            [
+                "MyBlog.Api/Controllers/BlogsController.cs",
+                "MyBlog.Api/Controllers/AuthController.cs"
+            ],
+            RecentToolHistory =
+            [
+                "search_files: blog create",
+                "search_files: auth login"
+            ]
+        });
+
+        var modelClient = new ScriptedModelClient(_ =>
+            throw new InvalidOperationException("The model should not be called before clarification."));
+
+        var orchestrator = new AgentOrchestrator(
+            path => new ITool[]
+            {
+                new ListFilesTool(path),
+                new ReadFileTool(path),
+                new SearchFilesTool(path, new RuleBasedEvidenceQualityEvaluator())
+            },
+            modelClient,
+            new AgentOrchestratorOptions { MaxIterations = 3 },
+            sessionStore,
+            new RuleBasedFileCompressor(),
+            new RuleBasedSessionSummarizer(new RuleBasedEvidenceQualityEvaluator()),
+            new RuleBasedEvidenceQualityEvaluator(),
+            new RuleBasedPromptClarifier());
+
+        var response = await orchestrator.ProcessAsync(
+            new AgentRequest(
+                "How does this work?",
+                workspace.RootPath,
+                new Dictionary<string, string> { ["sessionId"] = "session-clarify-context" }));
+
+        TestAssert.True(response.Success, "The orchestrator should ask a clarification question.");
+        TestAssert.Contains("blog flow", response.Output);
+        TestAssert.Contains("authentication flow", response.Output);
+        TestAssert.Equal(0, response.ToolResults?.Count ?? 0);
+    }
+
+    public static async Task AgentOrchestratorKeepsClearPromptsMovingWithoutClarificationAsync()
+    {
+        using var workspace = new TestWorkspace();
+        var callCount = 0;
+        var modelClient = new ScriptedModelClient(request =>
+        {
+            callCount++;
+            TestAssert.Equal(1, request.Conversation.Count);
+            return new ModelResponse("Grounded answer without clarification.", ResponseId: "resp-clear-prompt");
+        });
+
+        var orchestrator = new AgentOrchestrator(
+            path => new ITool[]
+            {
+                new ListFilesTool(path),
+                new ReadFileTool(path),
+                new SearchFilesTool(path, new RuleBasedEvidenceQualityEvaluator())
+            },
+            modelClient,
+            new AgentOrchestratorOptions { MaxIterations = 3 },
+            evidenceQualityEvaluator: new RuleBasedEvidenceQualityEvaluator(),
+            promptClarifier: new RuleBasedPromptClarifier());
+
+        var response = await orchestrator.ProcessAsync(
+            new AgentRequest("Trace how blog creation works across the codebase", workspace.RootPath));
+
+        TestAssert.True(response.Success, "The clear prompt should proceed through the normal orchestration flow.");
+        TestAssert.Equal("Grounded answer without clarification.", response.Output);
+        TestAssert.Equal(1, callCount);
     }
 
     public static async Task AgentOrchestratorRequiresRegisteredToolsAsync()
