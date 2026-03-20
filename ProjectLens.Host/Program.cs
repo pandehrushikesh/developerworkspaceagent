@@ -20,6 +20,7 @@ try
     IAgentSessionStore sessionStore = new FileBasedAgentSessionStore(AppContext.BaseDirectory);
     IEvidenceQualityEvaluator evidenceQualityEvaluator = new RuleBasedEvidenceQualityEvaluator();
     IFileCompressor fileCompressor = new RuleBasedFileCompressor();
+    IPromptClarifier promptClarifier = new RuleBasedPromptClarifier();
     ISessionSummarizer sessionSummarizer = new RuleBasedSessionSummarizer(evidenceQualityEvaluator);
 
     var orchestrator = new AgentOrchestrator(
@@ -37,7 +38,8 @@ try
         sessionStore,
         fileCompressor,
         sessionSummarizer,
-        evidenceQualityEvaluator);
+        evidenceQualityEvaluator,
+        promptClarifier);
 
     Console.WriteLine("ProjectLens host is ready.");
     Console.WriteLine(modelClient is null
