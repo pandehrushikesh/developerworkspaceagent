@@ -41,9 +41,7 @@ public sealed class RuleBasedEvidenceQualityEvaluator : IEvidenceQualityEvaluato
         "handles",
         "handle",
         "publishing",
-        "publish",
-        "login",
-        "token"
+        "publish"
     ];
 
     private static readonly string[] LowValueSegments =
@@ -90,18 +88,13 @@ public sealed class RuleBasedEvidenceQualityEvaluator : IEvidenceQualityEvaluato
 
     private static readonly Dictionary<string, string[]> IntentExpansionMap = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["blog"] = ["blog", "post", "article"],
-        ["post"] = ["post", "blog", "article"],
-        ["article"] = ["article", "blog", "post"],
-        ["create"] = ["create", "creation", "add", "publish", "save", "submit"],
-        ["creation"] = ["create", "creation", "add", "publish", "save", "submit"],
-        ["publish"] = ["publish", "create", "save", "post"],
-        ["save"] = ["save", "create", "update", "submit"],
-        ["write"] = ["write", "draft", "publish", "create"],
+        ["create"] = ["create", "creation", "add"],
+        ["creation"] = ["creation", "create", "add"],
         ["edit"] = ["edit", "update", "save"],
-        ["auth"] = ["auth", "login", "token", "session", "user"],
-        ["login"] = ["login", "auth", "token", "session"],
-        ["session"] = ["session", "token", "auth", "user"]
+        ["update"] = ["update", "edit", "save"],
+        ["save"] = ["save", "update", "write"],
+        ["write"] = ["write", "save", "update"],
+        ["publish"] = ["publish", "release", "submit"]
     };
 
     public bool IsLowValuePath(string path)
@@ -452,9 +445,7 @@ public sealed class RuleBasedEvidenceQualityEvaluator : IEvidenceQualityEvaluato
 
         if (matchedIntentTerms == 0 &&
             (lowerPath.Contains("program", StringComparison.Ordinal) ||
-             lowerPath.Contains("startup", StringComparison.Ordinal) ||
-             lowerPath.Contains("auth", StringComparison.Ordinal) ||
-             lowerPath.Contains("session", StringComparison.Ordinal)))
+             lowerPath.Contains("startup", StringComparison.Ordinal)))
         {
             score -= 30;
         }
@@ -539,37 +530,13 @@ public sealed class RuleBasedEvidenceQualityEvaluator : IEvidenceQualityEvaluato
         {
             return Array.Empty<string>();
         }
-
-        var prompt = userPrompt.ToLowerInvariant();
         var relatedTerms = new List<string>();
-
-        AddRelatedTermsIfPresent(prompt, relatedTerms, "unzip", ["extract", "archive", "zip", "decompress", "unpack"]);
-        AddRelatedTermsIfPresent(prompt, relatedTerms, "zip", ["archive", "compress", "extract", "unzip"]);
-        AddRelatedTermsIfPresent(prompt, relatedTerms, "extract", ["archive", "zip", "unzip", "decompress"]);
-        AddRelatedTermsIfPresent(prompt, relatedTerms, "archive", ["extract", "zip", "unzip", "decompress"]);
         relatedTerms.AddRange(ExpandIntentTermsCore(userPrompt));
 
         return relatedTerms
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Take(6)
+            .Take(4)
             .ToArray();
-    }
-
-    private static void AddRelatedTermsIfPresent(
-        string prompt,
-        ICollection<string> relatedTerms,
-        string token,
-        IReadOnlyCollection<string> expansions)
-    {
-        if (!prompt.Contains(token, StringComparison.Ordinal))
-        {
-            return;
-        }
-
-        foreach (var expansion in expansions)
-        {
-            relatedTerms.Add(expansion);
-        }
     }
 
     private sealed record RankedMatch(

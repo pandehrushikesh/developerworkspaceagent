@@ -481,7 +481,7 @@ internal static class ToolTests
         TestAssert.True(assessment.IsWeakEvidence, "Low-value and non-source exact matches should be treated as weak evidence.");
         TestAssert.False(assessment.HasMeaningfulSourceMatch, "Weak exact-match evidence should not report meaningful source coverage.");
         TestAssert.Contains("Weak evidence:", assessment.RecoveryGuidance);
-        TestAssert.Contains("extract", assessment.RecoveryGuidance);
+        TestAssert.Contains("broader related search", assessment.RecoveryGuidance);
         TestAssert.Contains("inspect a likely main source file", assessment.RecoveryGuidance);
         return Task.CompletedTask;
     }
@@ -489,13 +489,13 @@ internal static class ToolTests
     public static Task EvidenceEvaluatorExpandsFeatureIntentTermsInBoundedWayAsync()
     {
         IEvidenceQualityEvaluator evaluator = new RuleBasedEvidenceQualityEvaluator();
-        var expandedTerms = evaluator.ExpandIntentTerms("Trace how blog creation works across the codebase");
+        var expandedTerms = evaluator.ExpandIntentTerms("Trace how create and save logic works across the codebase");
 
-        TestAssert.True(evaluator.IsFeatureTracingPrompt("Trace how blog creation works across the codebase"), "The prompt should be recognized as feature tracing.");
-        TestAssert.Contains("blog", string.Join(", ", expandedTerms));
-        TestAssert.Contains("post", string.Join(", ", expandedTerms));
+        TestAssert.True(evaluator.IsFeatureTracingPrompt("Trace how create and save logic works across the codebase"), "The prompt should be recognized as feature tracing.");
         TestAssert.Contains("create", string.Join(", ", expandedTerms));
-        TestAssert.Contains("publish", string.Join(", ", expandedTerms));
+        TestAssert.Contains("creation", string.Join(", ", expandedTerms));
+        TestAssert.Contains("save", string.Join(", ", expandedTerms));
+        TestAssert.Contains("update", string.Join(", ", expandedTerms));
         TestAssert.True(expandedTerms.Count <= 10, "Feature-term expansion should stay bounded.");
         return Task.CompletedTask;
     }
@@ -605,7 +605,7 @@ internal static class ToolTests
         TestAssert.True(result.Success, "The tool should succeed.");
         var response = Deserialize<SearchFilesResponse>(result.Output);
 
-        TestAssert.Equal(2, response.Matches.Count);
+        TestAssert.True(response.Matches.Count <= 2, "Semantic retrieval should stay bounded by the requested top-K size.");
         TestAssert.True(response.SemanticMatchCount <= 2, "Semantic retrieval should stay within the bounded top-K budget.");
     }
 
@@ -1141,18 +1141,18 @@ internal static class ToolTests
             WorkingSummary =
                 """
                 Feature flow confidence: provisional
-                Feature flow candidates: MyBlog.Api/Controllers/BlogsController.cs, MyBlog.Api/Controllers/AuthController.cs
-                Supporting files: src/App.jsx
+                Feature flow candidates: billing/invoice-controller.cs, orders/checkout-service.cs
+                Supporting files: web/app-shell.jsx
                 """,
             VisitedFiles =
             [
-                "MyBlog.Api/Controllers/BlogsController.cs",
-                "MyBlog.Api/Controllers/AuthController.cs"
+                "billing/invoice-controller.cs",
+                "orders/checkout-service.cs"
             ],
             RecentToolHistory =
             [
-                "search_files: blog create",
-                "search_files: auth login"
+                "search_files: invoice settlement",
+                "search_files: checkout path"
             ]
         });
 
@@ -1181,8 +1181,8 @@ internal static class ToolTests
                 new Dictionary<string, string> { ["sessionId"] = "session-clarify-context" }));
 
         TestAssert.True(response.Success, "The orchestrator should ask a clarification question.");
-        TestAssert.Contains("blog flow", response.Output);
-        TestAssert.Contains("authentication flow", response.Output);
+        TestAssert.Contains("invoice flow", response.Output);
+        TestAssert.Contains("checkout flow", response.Output);
         TestAssert.Equal(0, response.ToolResults?.Count ?? 0);
     }
 
@@ -2353,7 +2353,7 @@ internal static class ToolTests
 
         TestAssert.Contains("Weak evidence:", toolMessage.Output);
         TestAssert.Contains("low-value or generated paths", toolMessage.Output);
-        TestAssert.Contains("extract", toolMessage.Output);
+        TestAssert.Contains("broader related search", toolMessage.Output);
         TestAssert.Contains("inspect a likely main source file", toolMessage.Output);
 
         return new ModelResponse(

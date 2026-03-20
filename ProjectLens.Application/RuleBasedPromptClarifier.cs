@@ -6,6 +6,12 @@ namespace ProjectLens.Application;
 
 public sealed class RuleBasedPromptClarifier : IPromptClarifier
 {
+    private static readonly HashSet<string> StructuralTokens = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "controller", "service", "manager", "handler", "model", "models", "repository", "entity",
+        "app", "program", "startup", "host", "api", "src", "client", "server"
+    };
+
     private static readonly HashSet<string> GenericPromptTokens = new(StringComparer.OrdinalIgnoreCase)
     {
         "the", "this", "that", "those", "these", "it", "flow", "logic", "works", "work", "trace", "explain",
@@ -168,8 +174,6 @@ public sealed class RuleBasedPromptClarifier : IPromptClarifier
             }
         }
 
-        candidates.InsertRange(0, ExtractLabelsFromSessionSummary(sessionState.WorkingSummary));
-
         var recentSearches = sessionState.RecentToolHistory
             .TakeLast(4)
             .Where(entry => entry.StartsWith("search_files:", StringComparison.OrdinalIgnoreCase))
@@ -212,47 +216,6 @@ public sealed class RuleBasedPromptClarifier : IPromptClarifier
         return labels;
     }
 
-    private static IReadOnlyCollection<string> ExtractLabelsFromSessionSummary(string summary)
-    {
-        if (string.IsNullOrWhiteSpace(summary))
-        {
-            return Array.Empty<string>();
-        }
-
-        var labels = new List<string>();
-        var normalizedSummary = summary.ToLowerInvariant();
-
-        if (ContainsAny(normalizedSummary, "blog", "blogs", "post", "article"))
-        {
-            labels.Add("blog flow");
-        }
-
-        if (ContainsAny(normalizedSummary, "auth", "login", "token", "session"))
-        {
-            labels.Add("authentication flow");
-        }
-
-        if (ContainsAny(normalizedSummary, "install", "installer", "setup"))
-        {
-            labels.Add("installer flow");
-        }
-
-        if (ContainsAny(normalizedSummary, "archive", "extract", "unzip", "zip"))
-        {
-            labels.Add("archive flow");
-        }
-
-        if (ContainsAny(normalizedSummary, "agent", "orchestrator"))
-        {
-            labels.Add("agent orchestration flow");
-        }
-
-        return labels
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Take(3)
-            .ToArray();
-    }
-
     private static IReadOnlyCollection<string> ExtractLabelsFromPathList(string rawValue)
     {
         if (string.IsNullOrWhiteSpace(rawValue))
@@ -271,74 +234,33 @@ public sealed class RuleBasedPromptClarifier : IPromptClarifier
 
     private static string PathToFlowLabel(string path)
     {
-        var normalizedPath = path.Replace('\\', '/').ToLowerInvariant();
-        var tokens = ExtractWordTokens(normalizedPath);
-
-        if (ContainsAnyToken(tokens, "blog", "blogs", "post", "article"))
-        {
-            return "blog flow";
-        }
-
-        if (ContainsAnyToken(tokens, "auth", "login", "token", "session", "user"))
-        {
-            return "authentication flow";
-        }
-
-        if (ContainsAnyToken(tokens, "install", "installer", "setup"))
-        {
-            return "installer flow";
-        }
-
-        if (ContainsAnyToken(tokens, "archive", "extract", "unzip", "zip"))
-        {
-            return "archive flow";
-        }
-
-        if (ContainsAnyToken(tokens, "agent", "orchestrator"))
-        {
-            return "agent orchestration flow";
-        }
-
+        var normalizedPath = path.Replace('\\', '/');
         var fileName = Path.GetFileNameWithoutExtension(normalizedPath);
-        if (string.IsNullOrWhiteSpace(fileName))
+        var fileTokens = ExtractLabelTokens(fileName);
+        if (fileTokens.Length > 0)
         {
-            return string.Empty;
+            return $"{string.Join(" ", fileTokens)} flow";
         }
 
-        var simplified = Regex.Replace(fileName, "(controller|service|manager|handler|models?|repository|app|program|startup)$", string.Empty, RegexOptions.IgnoreCase);
-        simplified = Regex.Replace(simplified, "([a-z])([A-Z])", "$1 $2");
-        simplified = simplified.Replace('-', ' ').Replace('_', ' ').Trim();
+        var directoryTokens = normalizedPath
+            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Reverse()
+            .Skip(1)
+            .SelectMany(ExtractLabelTokens)
+            .Take(2)
+            .ToArray();
 
-        return string.IsNullOrWhiteSpace(simplified)
+        return directoryTokens.Length == 0
             ? string.Empty
-            : $"{simplified.ToLowerInvariant()} flow";
+            : $"{string.Join(" ", directoryTokens)} flow";
     }
 
     private static string TokenToFlowLabel(string token)
     {
-        if (ContainsAny(token, "blog", "post", "article"))
-        {
-            return "blog flow";
-        }
-
-        if (ContainsAny(token, "auth", "login", "token", "session", "user"))
-        {
-            return "authentication flow";
-        }
-
-        if (ContainsAny(token, "install", "installer"))
-        {
-            return "installer flow";
-        }
-
-        if (ContainsAny(token, "archive", "extract", "unzip", "zip"))
-        {
-            return "archive flow";
-        }
-
-        return token.Length < 3
+        var labelTokens = ExtractLabelTokens(token).Take(2).ToArray();
+        return labelTokens.Length == 0
             ? string.Empty
-            : $"{token} flow";
+            : $"{string.Join(" ", labelTokens)} flow";
     }
 
     private static string BuildQuestion(IReadOnlyCollection<string> candidateOptions)
@@ -369,18 +291,32 @@ public sealed class RuleBasedPromptClarifier : IPromptClarifier
         return tokens.Any(token => value.Contains(token, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static bool ContainsAnyToken(IReadOnlyCollection<string> tokens, params string[] candidates)
-    {
-        return tokens.Any(token =>
-            candidates.Any(candidate =>
-                token.Equals(candidate, StringComparison.OrdinalIgnoreCase) ||
-                token.StartsWith(candidate, StringComparison.OrdinalIgnoreCase)));
-    }
-
     private static IReadOnlyCollection<string> ExtractWordTokens(string value)
     {
-        return Regex.Matches(value, "[a-z0-9]+")
+        return Regex.Matches(value.ToLowerInvariant(), "[a-z0-9]+")
             .Select(match => match.Value)
+            .ToArray();
+    }
+
+    private static string[] ExtractLabelTokens(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return Array.Empty<string>();
+        }
+
+        var simplified = Regex.Replace(
+            value,
+            "(controller|service|manager|handler|models?|repository|entity|app|program|startup|host|api|client|server)$",
+            string.Empty,
+            RegexOptions.IgnoreCase);
+        var expanded = Regex.Replace(simplified, "([a-z])([A-Z])", "$1 $2");
+        return ExtractWordTokens(expanded)
+            .Where(token => token.Length >= 3)
+            .Where(token => !GenericPromptTokens.Contains(token))
+            .Where(token => !StructuralTokens.Contains(token))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(3)
             .ToArray();
     }
 

@@ -509,11 +509,11 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             If multiple meaningful source files appear relevant to a logic, flow, architecture, or refactor question, inspect up to 2-3 of the top files and synthesize across them before finalizing.
             Distinguish the likely main flow file from supporting files when multiple files contribute to the answer.
             For feature-tracing prompts, prefer files closest to the requested feature intent such as feature-related controllers, services, entities/models, and frontend/API consumers.
-            Do not default to Program.cs, startup wiring, authentication, or session plumbing as the main flow unless the evidence clearly shows the feature is implemented there.
+            Do not default to Program.cs, startup wiring, or other setup/plumbing files as the main flow unless the evidence clearly shows the feature is implemented there.
             If the current feature context is marked provisional, do not treat any candidate file as settled truth yet.
             For follow-up prompts like "Which files appear to drive that feature?" or "Now suggest a refactor for that flow.", explicitly preserve that uncertainty, name the strongest current candidates, and avoid overconfident refactor guidance tied to unrelated flows.
             If an exact keyword search returns only low-value, generated, config, project, or other non-source matches, treat that as weak evidence rather than enough support for a final logic answer.
-            When search evidence is weak, prefer one bounded recovery step: either broaden the search with related terms (for example unzip -> extract, archive, zip, decompress, unpack) or inspect a likely main source file before answering.
+            When search evidence is weak, prefer one bounded recovery step: either broaden the search with related implementation terms or inspect a likely main source file before answering.
             For follow-up requests about refactoring, improving, or explaining logic you already inspected, use the existing session context and prior file summaries first.
             If the session already identifies a likely file or flow, propose the best grounded answer or refactor direction you can before requesting more tool calls.
             For refactor, design, or code-improvement prompts, clearly separate observed facts from inferred recommendations.
@@ -954,22 +954,6 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         return synthesisSignals.Any(signal => normalizedPrompt.Contains(signal, StringComparison.Ordinal));
     }
 
-    private static bool IsFeatureTracingPrompt(string userPrompt)
-    {
-        if (string.IsNullOrWhiteSpace(userPrompt))
-        {
-            return false;
-        }
-
-        var normalizedPrompt = userPrompt.ToLowerInvariant();
-        var featureSignals = new[]
-        {
-            "trace", "feature", "creation", "create", "publish", "save", "add", "works across", "end-to-end"
-        };
-
-        return featureSignals.Any(signal => normalizedPrompt.Contains(signal, StringComparison.Ordinal));
-    }
-
     private AggregatedEvidenceContext? BuildAggregatedEvidenceContext(
         string rawToolOutput,
         string userPrompt,
@@ -1000,6 +984,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
                 .ToArray();
             var rankedMatches = evidenceQualityEvaluator
                 .RankMatches(allMatches, query ?? userPrompt, Math.Min(20, Math.Max(allMatches.Length, 5)));
+            var isFeatureTracingPrompt = evidenceQualityEvaluator.IsFeatureTracingPrompt(userPrompt);
 
             var selectedPaths = rankedMatches
                 .Where(match => evidenceQualityEvaluator.IsMeaningfulSourcePath(match.Path))
@@ -1032,14 +1017,14 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
                 $"Selection is based on ranked search matches and snippets; {CountObservedFiles(selectedFiles)} of {selectedFiles.Length} selected file(s) have been read so far."
             };
 
-            if (IsFeatureTracingPrompt(userPrompt) && CountObservedFiles(selectedFiles) < Math.Min(2, selectedFiles.Length))
+            if (isFeatureTracingPrompt && CountObservedFiles(selectedFiles) < Math.Min(2, selectedFiles.Length))
             {
                 evidenceLimitations.Add("Feature flow is still being traced; the current main-flow file is provisional until more supporting files are read.");
             }
 
             return new AggregatedEvidenceContext(
-                IsFeatureTracingPrompt(userPrompt),
-                IsFeatureTracingPrompt(userPrompt),
+                isFeatureTracingPrompt,
+                isFeatureTracingPrompt,
                 selectedFiles[0].Path,
                 selectedFiles,
                 evidenceLimitations);
@@ -1239,24 +1224,25 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             }
 
             if (lowerPath.Contains("entity", StringComparison.Ordinal) ||
-                lowerPath.Contains("model", StringComparison.Ordinal) ||
-                lowerPath.Contains("blogscontroller", StringComparison.Ordinal) ||
-                lowerPath.Contains("blogpost", StringComparison.Ordinal))
+                lowerPath.Contains("model", StringComparison.Ordinal))
             {
                 score += 18;
             }
 
             if (lowerPath.EndsWith("app.jsx", StringComparison.Ordinal) ||
                 lowerPath.EndsWith("app.tsx", StringComparison.Ordinal) ||
+                lowerPath.EndsWith("app.js", StringComparison.Ordinal) ||
+                lowerPath.EndsWith("app.ts", StringComparison.Ordinal) ||
                 lowerPath.Contains("/src/", StringComparison.Ordinal))
             {
                 score += 16;
             }
 
             if (lowerPath.EndsWith("program.cs", StringComparison.Ordinal) ||
-                lowerPath.Contains("authcontroller", StringComparison.Ordinal) ||
-                lowerPath.Contains("sessionscontroller", StringComparison.Ordinal) ||
-                lowerPath.Contains("tokenservice", StringComparison.Ordinal))
+                lowerPath.EndsWith("startup.cs", StringComparison.Ordinal) ||
+                lowerPath.Contains("launchsettings", StringComparison.Ordinal) ||
+                lowerPath.Contains("/config/", StringComparison.Ordinal) ||
+                lowerPath.Contains("/configuration/", StringComparison.Ordinal))
             {
                 score -= 45;
             }
