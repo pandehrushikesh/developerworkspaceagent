@@ -1,17 +1,18 @@
 # ProjectLens - AI-Powered Developer Workspace Agent
 
-ProjectLens is a **.NET 8 AI agent** that analyzes your local codebase using:
-- 🧠 LLM-driven reasoning
-- 🧩 tool-based orchestration
-- 💾 persistent session memory
-- 🔍 multi-file evidence aggregation
-- 🎯 feature-aware reasoning
-- ⚖️ confidence-gated decision making
+> ProjectLens is a host-agnostic, evidence-driven code analysis agent that retrieves and evaluates code context through bounded tool execution.
+ProjectLens is a **.NET 8 AI-assisted code analysis agent** that explores and analyzes a local codebase using:
+* 🧠 LLM-guided reasoning
+* 🧩 tool-based orchestration
+* 💾 persistent session memory
+* 🔍 hybrid search (keyword + semantic)
+* ❓ prompt clarification before retrieval
+* ⚖️ evidence-aware decision making
 
-**ProjectLens lets you ask questions about your codebase and answers them by actually reading your code.**
+**ProjectLens lets you ask questions about your codebase and answers them by retrieving and analyzing relevant code.**
 
 > Built with a clean separation between reasoning (LLM), execution (tools), and control (orchestrator).
-> Think of it as a developer that reads your codebase before answering.
+> The system relies on **retrieved evidence**, not assumptions.
 
 Instead of hardcoded workflows, ProjectLens exposes capabilities through tools and lets the model decide:
 
@@ -20,7 +21,7 @@ Instead of hardcoded workflows, ProjectLens exposes capabilities through tools a
 - how to answer your query
 
 ---
-## 🧠 What Makes ProjectLens Different?
+## 🧠 How It Differs from Traditional Tools
 
 Traditional tools:
 - search files
@@ -33,28 +34,32 @@ ProjectLens:
 - tracks uncertainty
 - refines answers across steps
   
-👉 It behaves more like a developer reasoning through code, not a script.
-
-👉 It doesn’t just search code — it understands how pieces connect.
+👉 It goes beyond returning matches by helping navigate related parts of the codebase.
 
 ---
 
 ## ❓ What Problem Does It Solve?
 
-Developers often ask:
+When working in an unfamiliar repository, developers often ask:
 
-- "What does this repo do?"
-- "Where is this feature implemented?"
-- "Which files actually matter?"
-- "How does this flow work across files?"
-- "Now refactor that flow"
+* "What does this repo do?"
+* "Where is this feature implemented?"
+* "Which files are relevant to this flow?"
+* "How does this behavior span across files?"
 
-ProjectLens answers these questions by:
+Answering these usually requires:
 
-- exploring your workspace
-- reading relevant files
-- aggregating evidence
-- reasoning over real code (not guesses)
+* manual search
+* opening multiple files
+* building mental context
+
+ProjectLens assists by:
+
+* exploring the workspace
+* retrieving relevant files
+* presenting grounded evidence
+* maintaining session context across steps
+
 ---
 
 ## How It Works
@@ -63,10 +68,13 @@ ProjectLens answers these questions by:
 User Prompt
      |
      v
+Prompt Clarifier (optional)
+     |
+     v
 Agent Orchestrator
      |
      v
-Session Memory (persistent)
+Session Memory
      |
      v
 Model (LLM)
@@ -75,10 +83,10 @@ Model (LLM)
 Tool Calls (if needed)
      |
      v
-Filesystem Tools (list_files, read_file, search_files)
+Filesystem + Search Tools
      |
      v
-Evidence Scoring + Aggregation
+Evidence Evaluation + Aggregation
      |
      v
 Compressed Context
@@ -90,12 +98,12 @@ Back to Model
 Final Answer
 
 ```
-> 👉 Unlike static analysis tools, ProjectLens dynamically decides what to read next based on evolving evidence.
+> The system iteratively retrieves and evaluates evidence before producing a response.
 
 ---
 ## 🧠 Evolution of ProjectLens
 <details>
-<summary><b>Click to see the Evolution of ProjectLens (v0.2 - v0.6)</b></summary>
+<summary><b>Click to see the Evolution of ProjectLens (v0.2 - v0.8)</b></summary>
      
 ### v0.2 — Stateful Agent
 
@@ -156,6 +164,27 @@ Final Answer
   - "that flow"
 - keeps context anchored to the correct feature
 - avoids drift into unrelated parts (e.g., Program.cs)
+
+---
+
+### v0.7 — Clarifying Question Engine
+
+* detects ambiguous or underspecified prompts
+* requests clarification before retrieval
+* avoids premature or irrelevant exploration
+* improves precision of tool usage
+
+---
+
+### v0.8 — Hybrid Semantic Search
+
+* introduces semantic retrieval alongside keyword search
+* uses semantic search selectively:
+
+  * when keyword evidence is weak
+  * when queries are conceptual
+* maintains keyword-first, bounded retrieval strategy
+* improves discovery of relevant code beyond exact matches
 
 ---
 </details>
@@ -231,48 +260,99 @@ ProjectLens:
 ## 🔧 Features
 
 ### 🧠 Core Agent Capabilities
-✅ Model-driven orchestration loop  
-✅ Tool-based architecture (extensible)  
-✅ Follow-up prompt support (multi-step reasoning)  
-✅ Testable components  
+
+* ✅ Model-driven orchestration with bounded execution loop
+* ✅ Tool-based architecture (extensible capability model)
+* ✅ Follow-up prompt support (multi-step interactions)
+* ✅ Prompt clarification before retrieval (ambiguity handling)
+* ✅ Deterministic fallback mode (rule-based execution without AI)
 
 ---
 
-### 🔍 Code Understanding & Reasoning
-✅ Grounded reasoning (observed vs inferred separation)  
-✅ Evidence-aware responses (partial vs full context awareness)  
-✅ Multi-file evidence aggregation  
-✅ Feature-aware reasoning  
+### 🔍 Retrieval & Code Exploration
+
+* ✅ Hybrid search:
+
+  * keyword-first retrieval
+  * semantic search fallback (for weak or conceptual queries)
+* ✅ Workspace-scoped exploration (safe and bounded)
+* ✅ Snippet-based evidence extraction
+* ✅ File pattern filtering and recursive traversal
+* ✅ Binary file detection and skipping
+* ✅ Result limiting for controlled execution
 
 ---
 
-### 💾 Memory & Context
-✅ Session memory (stateful interactions)  
-✅ Persistent session memory  
-✅ Context compression for large files  
+### 🧠 Evidence-Aware Reasoning
+
+* ✅ Grounded reasoning (observed vs inferred separation)
+* ✅ Evidence quality evaluation and ranking
+* ✅ Multi-file evidence aggregation (bounded scope)
+* ✅ Feature-intent aware exploration (guided file selection)
+* ✅ Confidence-aware conclusions (provisional vs strong understanding)
+
+---
+
+### 💾 Memory & Context Management
+
+* ✅ Session memory (stateful interactions)
+* ✅ Persistent memory across runs
+* ✅ Context compression for efficient token usage
+* ✅ Bounded summary construction (controlled memory growth)
 
 ---
 
 ### ⚙️ Reliability & Control
-✅ Confidence-gated decision making  
-✅ Safe filesystem access (workspace-bound)  
-✅ Clean architecture separation  
-✅ Rule-based fallback (no AI required)    
- 
 
-### 🧠 Intelligent Code Exploration
+* ✅ Bounded execution (iteration limits, result limits)
+* ✅ Duplicate tool-call prevention
+* ✅ Weak-evidence detection and recovery strategies
+* ✅ Safe filesystem access (workspace-bound only)
+* ✅ Clean architecture separation (host-agnostic design)
 
-✅ `list_files` – Discover workspace structure  
-✅ `read_file` – Read file contents safely  
-✅ `search_files` – 🔍 Search across codebase with:
+---
 
-- keyword search across files
-- recursive directory traversal
-- file pattern filtering (e.g., *.cs, *.json)
-- case-sensitive / insensitive search
-- snippet extraction for context
-- binary file skipping
-- result limiting for performance
+### ✅ 2. Reduced overlap
+
+Before:
+
+* “reasoning”, “exploration”, “search” mixed together
+
+Now:
+
+* clearly separated into:
+
+  * retrieval
+  * reasoning
+  * memory
+  * control
+
+👉 This reflects your **actual architecture layers**
+
+---
+
+### ✅ 3. More credible language
+
+Removed:
+
+* vague phrases like “understands deeply”
+
+Added:
+
+* “bounded”, “evidence-aware”, “controlled”
+
+👉 This signals **engineering maturity**
+
+---
+
+### ✅ 4. Aligns with your refactor
+
+Now matches what you actually built:
+
+* orchestrator loop ✔️
+* hybrid search ✔️
+* summarizer memory ✔️
+* evidence evaluator ✔️
 
 ---
 ## ❓ Why ProjectLens?
@@ -383,7 +463,7 @@ If `ApiKey` or `Model` is not configured, ProjectLens automatically switches to 
 
 ## ⚠️ Current Limitations
 
-- No semantic search (rule-based only)
+- Semantic search is selective (not full indexing)
 - Bounded multi-file aggregation (2–3 files)
 - Refactor suggestions may be high-level if evidence is partial
 
@@ -439,4 +519,4 @@ It doesn’t just explore and remember — it reasons with awareness of its own 
 
 ## 📌 Version
 
-**v0.6 — Feature-Aware Multi-File Reasoning Agent**
+**v0.8 — Hybrid Retrieval + Clarification-Aware Agent**
