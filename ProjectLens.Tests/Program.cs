@@ -34,6 +34,7 @@ internal static class Program
             ("Evidence evaluator expands feature intent terms in a bounded way", ToolTests.EvidenceEvaluatorExpandsFeatureIntentTermsInBoundedWayAsync),
             ("Semantic search returns relevant chunks for conceptual queries", ToolTests.SemanticSearchReturnsRelevantChunksForConceptualQueriesAsync),
             ("SearchFilesTool uses hybrid retrieval for conceptual queries", ToolTests.SearchFilesToolUsesHybridRetrievalForConceptualQueriesAsync),
+            ("SearchFilesTool preserves keyword-first mode for exact queries", ToolTests.SearchFilesToolPreservesKeywordFirstModeForExactQueriesAsync),
             ("SearchFilesTool keeps semantic retrieval bounded by top K", ToolTests.SearchFilesToolKeepsSemanticRetrievalBoundedByTopKAsync),
             ("SearchFilesTool ranks source files above generated artifacts", ToolTests.SearchFilesToolRanksSourceFilesAboveGeneratedArtifactsAsync),
             ("SearchFilesTool prefers feature-related files over generic setup for feature tracing", ToolTests.SearchFilesToolPrefersFeatureFilesOverGenericSetupAsync),
@@ -577,6 +578,28 @@ internal static class ToolTests
         TestAssert.True(
             response.Matches.First().MatchKind is "semantic" or "keyword",
             "The result should stay grounded as a bounded candidate match.");
+    }
+
+    public static async Task SearchFilesToolPreservesKeywordFirstModeForExactQueriesAsync()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.WriteText("README.md", "ProjectLens reads repositories safely.");
+
+        var tool = new SearchFilesTool(
+            workspace.RootPath,
+            new RuleBasedEvidenceQualityEvaluator(),
+            new LocalSemanticSearchService(workspace.RootPath, new DeterministicEmbeddingService()));
+        var result = await tool.ExecuteAsync(new Dictionary<string, string>
+        {
+            ["query"] = "ProjectLens",
+            ["maxResults"] = "1"
+        });
+
+        TestAssert.True(result.Success, "The tool should succeed.");
+        var response = Deserialize<SearchFilesResponse>(result.Output);
+
+        TestAssert.Equal("keyword", response.RetrievalMode);
+        TestAssert.Equal("keyword", response.Matches.Single().MatchKind);
     }
 
     public static async Task SearchFilesToolKeepsSemanticRetrievalBoundedByTopKAsync()
