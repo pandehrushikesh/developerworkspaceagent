@@ -93,27 +93,14 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             return invalidResponse!;
         }
 
-        steps.Add(new AgentExecutionStep($"Processing workspace: {request.WorkspacePath}"));
+        var executionContext = await InitializeModelExecutionAsync(request, steps, cancellationToken);
+        var tools = executionContext.Tools;
+        var registeredTools = executionContext.RegisteredTools;
+        var sessionState = executionContext.SessionState;
 
-        var tools = _toolFactory(request.WorkspacePath);
-        var registeredTools = GetRegisteredTools(tools);
-        var sessionState = await LoadOrCreateSessionStateAsync(request, cancellationToken);
-
-        steps.Add(new AgentExecutionStep(
-            $"Registered tools: {string.Join(", ", registeredTools.Select(tool => tool.Name))}"));
-
-        if (sessionState is not null)
+        if (TryCreateClarificationResponse(request, sessionState, steps, toolResults, out var clarificationResponse))
         {
-            steps.Add(new AgentExecutionStep(
-                $"Loaded session '{sessionState.SessionId}' with {sessionState.VisitedFiles.Count} visited file(s)."));
-        }
-
-        var clarification = _promptClarifier.GetClarification(request.UserPrompt, sessionState);
-        if (clarification is not null)
-        {
-            steps.Add(new AgentExecutionStep(
-                "Prompt is ambiguous; asking for clarification before tool exploration."));
-            return new AgentResponse(clarification.Question, steps, toolResults);
+            return clarificationResponse!;
         }
 
         var conversation = new List<ModelConversationItem>
@@ -132,50 +119,33 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
 
             steps.Add(new AgentExecutionStep($"Calling model for iteration {iteration}."));
 
-            var modelRequest = new ModelRequest(
-                BuildModelInstructions(sessionState),
-                conversation.ToArray(),
-                registeredTools
-                    .Select(tool => new ModelToolDefinition(tool.Name, tool.Description, tool.Parameters))
-                    .ToArray(),
-                previousResponseId);
-
+            var modelRequest = BuildModelRequest(conversation, registeredTools, sessionState, previousResponseId);
             var modelResponse = await _modelClient!.GenerateAsync(modelRequest, cancellationToken);
             previousResponseId = modelResponse.ResponseId;
 
             var toolCalls = modelResponse.ToolCalls?.Where(call => !string.IsNullOrWhiteSpace(call.ToolName)).ToArray()
                 ?? Array.Empty<ModelToolCall>();
 
-            if (!string.IsNullOrWhiteSpace(modelResponse.FinalAnswer) && toolCalls.Length == 0)
+            if (TryHandleFinalAnswer(
+                    modelResponse.FinalAnswer,
+                    toolCalls,
+                    hasPendingWeakSearchEvidence,
+                    weakSearchRecoveryGuidance,
+                    aggregatedEvidenceContext,
+                    request.UserPrompt,
+                    iteration,
+                    steps,
+                    toolResults,
+                    out var finalResponse,
+                    out var followUpPrompt))
             {
-                if (hasPendingWeakSearchEvidence)
+                if (finalResponse is not null)
                 {
-                    steps.Add(new AgentExecutionStep(
-                        "Model attempted to finalize after weak search evidence; requesting broader recovery instead.",
-                        false));
-
-                    conversation.Add(new ModelTextMessage(
-                        "user",
-                        BuildWeakSearchRecoveryPrompt(weakSearchRecoveryGuidance)));
-
-                    continue;
+                    return finalResponse;
                 }
 
-                if (RequiresMoreMultiFileEvidence(aggregatedEvidenceContext, request.UserPrompt))
-                {
-                    steps.Add(new AgentExecutionStep(
-                        "Model attempted to finalize before aggregating enough multi-file evidence; requesting one more supporting file.",
-                        false));
-
-                    conversation.Add(new ModelTextMessage(
-                        "user",
-                        BuildMultiFileAggregationPrompt(aggregatedEvidenceContext!)));
-
-                    continue;
-                }
-
-                steps.Add(new AgentExecutionStep($"Model returned a final answer on iteration {iteration}."));
-                return new AgentResponse(modelResponse.FinalAnswer, steps, toolResults);
+                conversation.Add(new ModelTextMessage("user", followUpPrompt!));
+                continue;
             }
 
             if (toolCalls.Length == 0)
@@ -195,50 +165,27 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
                 var toolCallSignature = CreateToolCallSignature(toolCall);
                 if (!executedToolCalls.Add(toolCallSignature))
                 {
-                    var duplicateToolCallMessage = BuildDuplicateToolCallMessage(toolCall, sessionState);
-
-                    steps.Add(new AgentExecutionStep(
-                        $"Prevented duplicate tool call '{toolCall.ToolName}' with the same arguments.",
-                        false));
-
-                    conversation.Add(new ModelToolResultMessage(
-                        toolCall.CallId,
-                        toolCall.ToolName,
-                        duplicateToolCallMessage));
-
-                    sessionState = await UpdateSessionStateAsync(
+                    sessionState = await HandleDuplicateToolCallAsync(
+                        toolCall,
                         sessionState,
-                        toolCall.ToolName,
-                        duplicateToolCallMessage,
-                        null,
+                        conversation,
+                        steps,
                         cancellationToken);
-
                     continue;
                 }
 
                 var executionResult = await ExecuteToolCallAsync(tools, toolCall, steps, cancellationToken);
                 toolResults.Add(executionResult);
 
-                var output = executionResult.Success
-                    ? CreateToolContextOutput(
-                        toolCall.ToolName,
-                        executionResult.Output,
-                        request.UserPrompt,
-                        ref aggregatedEvidenceContext)
-                    : executionResult.ErrorMessage ?? "Tool execution failed.";
-
-                if (executionResult.Success)
-                {
-                    UpdateWeakSearchState(
-                        toolCall.ToolName,
-                        executionResult.Output,
-                        request.UserPrompt,
-                        ref hasPendingWeakSearchEvidence,
-                        ref weakSearchRecoveryGuidance);
-                }
+                var output = BuildToolConversationOutput(
+                    toolCall,
+                    executionResult,
+                    request.UserPrompt,
+                    ref aggregatedEvidenceContext,
+                    ref hasPendingWeakSearchEvidence,
+                    ref weakSearchRecoveryGuidance);
 
                 conversation.Add(new ModelToolResultMessage(toolCall.CallId, toolCall.ToolName, output));
-
                 sessionState = await UpdateSessionStateAsync(
                     sessionState,
                     toolCall.ToolName,
@@ -256,6 +203,161 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             $"The agent stopped after reaching the maximum of {_options.MaxIterations} iterations.",
             steps,
             toolResults);
+    }
+
+    private async Task<ModelExecutionContext> InitializeModelExecutionAsync(
+        AgentRequest request,
+        ICollection<AgentExecutionStep> steps,
+        CancellationToken cancellationToken)
+    {
+        steps.Add(new AgentExecutionStep($"Processing workspace: {request.WorkspacePath}"));
+
+        var tools = _toolFactory(request.WorkspacePath);
+        var registeredTools = GetRegisteredTools(tools);
+        var sessionState = await LoadOrCreateSessionStateAsync(request, cancellationToken);
+
+        steps.Add(new AgentExecutionStep(
+            $"Registered tools: {string.Join(", ", registeredTools.Select(tool => tool.Name))}"));
+
+        if (sessionState is not null)
+        {
+            steps.Add(new AgentExecutionStep(
+                $"Loaded session '{sessionState.SessionId}' with {sessionState.VisitedFiles.Count} visited file(s)."));
+        }
+
+        return new ModelExecutionContext(tools, registeredTools, sessionState);
+    }
+
+    private bool TryCreateClarificationResponse(
+        AgentRequest request,
+        AgentSessionState? sessionState,
+        ICollection<AgentExecutionStep> steps,
+        IReadOnlyCollection<ToolExecutionResult> toolResults,
+        out AgentResponse? clarificationResponse)
+    {
+        var clarification = _promptClarifier.GetClarification(request.UserPrompt, sessionState);
+        if (clarification is null)
+        {
+            clarificationResponse = null;
+            return false;
+        }
+
+        steps.Add(new AgentExecutionStep(
+            "Prompt is ambiguous; asking for clarification before tool exploration."));
+        clarificationResponse = new AgentResponse(clarification.Question, steps.ToArray(), toolResults);
+        return true;
+    }
+
+    private static ModelRequest BuildModelRequest(
+        IReadOnlyCollection<ModelConversationItem> conversation,
+        IReadOnlyCollection<ToolDefinition> registeredTools,
+        AgentSessionState? sessionState,
+        string? previousResponseId)
+    {
+        return new ModelRequest(
+            BuildModelInstructions(sessionState),
+            conversation,
+            registeredTools
+                .Select(tool => new ModelToolDefinition(tool.Name, tool.Description, tool.Parameters))
+                .ToArray(),
+            previousResponseId);
+    }
+
+    private bool TryHandleFinalAnswer(
+        string? finalAnswer,
+        IReadOnlyCollection<ModelToolCall> toolCalls,
+        bool hasPendingWeakSearchEvidence,
+        string? weakSearchRecoveryGuidance,
+        AggregatedEvidenceContext? aggregatedEvidenceContext,
+        string userPrompt,
+        int iteration,
+        ICollection<AgentExecutionStep> steps,
+        IReadOnlyCollection<ToolExecutionResult> toolResults,
+        out AgentResponse? finalResponse,
+        out string? followUpPrompt)
+    {
+        finalResponse = null;
+        followUpPrompt = null;
+
+        if (string.IsNullOrWhiteSpace(finalAnswer) || toolCalls.Count > 0)
+        {
+            return false;
+        }
+
+        if (hasPendingWeakSearchEvidence)
+        {
+            steps.Add(new AgentExecutionStep(
+                "Model attempted to finalize after weak search evidence; requesting broader recovery instead.",
+                false));
+            followUpPrompt = BuildWeakSearchRecoveryPrompt(weakSearchRecoveryGuidance);
+            return true;
+        }
+
+        if (RequiresMoreMultiFileEvidence(aggregatedEvidenceContext, userPrompt))
+        {
+            steps.Add(new AgentExecutionStep(
+                "Model attempted to finalize before aggregating enough multi-file evidence; requesting one more supporting file.",
+                false));
+            followUpPrompt = BuildMultiFileAggregationPrompt(aggregatedEvidenceContext!);
+            return true;
+        }
+
+        steps.Add(new AgentExecutionStep($"Model returned a final answer on iteration {iteration}."));
+        finalResponse = new AgentResponse(finalAnswer, steps.ToArray(), toolResults);
+        return true;
+    }
+
+    private async Task<AgentSessionState?> HandleDuplicateToolCallAsync(
+        ModelToolCall toolCall,
+        AgentSessionState? sessionState,
+        ICollection<ModelConversationItem> conversation,
+        ICollection<AgentExecutionStep> steps,
+        CancellationToken cancellationToken)
+    {
+        var duplicateToolCallMessage = BuildDuplicateToolCallMessage(toolCall, sessionState);
+
+        steps.Add(new AgentExecutionStep(
+            $"Prevented duplicate tool call '{toolCall.ToolName}' with the same arguments.",
+            false));
+
+        conversation.Add(new ModelToolResultMessage(
+            toolCall.CallId,
+            toolCall.ToolName,
+            duplicateToolCallMessage));
+
+        return await UpdateSessionStateAsync(
+            sessionState,
+            toolCall.ToolName,
+            duplicateToolCallMessage,
+            null,
+            cancellationToken);
+    }
+
+    private string BuildToolConversationOutput(
+        ModelToolCall toolCall,
+        ToolExecutionResult executionResult,
+        string userPrompt,
+        ref AggregatedEvidenceContext? aggregatedEvidenceContext,
+        ref bool hasPendingWeakSearchEvidence,
+        ref string? weakSearchRecoveryGuidance)
+    {
+        if (!executionResult.Success)
+        {
+            return executionResult.ErrorMessage ?? "Tool execution failed.";
+        }
+
+        UpdateWeakSearchState(
+            toolCall.ToolName,
+            executionResult.Output,
+            userPrompt,
+            ref hasPendingWeakSearchEvidence,
+            ref weakSearchRecoveryGuidance);
+
+        return CreateToolContextOutput(
+            toolCall.ToolName,
+            executionResult.Output,
+            userPrompt,
+            ref aggregatedEvidenceContext);
     }
 
     private async Task<AgentResponse> ProcessRuleBasedAsync(
@@ -1463,4 +1565,9 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         string Content,
         bool IsTruncated,
         int CharacterCount);
+
+    private sealed record ModelExecutionContext(
+        IReadOnlyDictionary<string, ITool> Tools,
+        IReadOnlyCollection<ToolDefinition> RegisteredTools,
+        AgentSessionState? SessionState);
 }
