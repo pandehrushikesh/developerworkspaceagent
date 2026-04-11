@@ -1137,9 +1137,9 @@ internal static class ToolTests
                 new ReadFileTool(path),
                 new SearchFilesTool(path)
             },
+            CreateDependencies(promptClarifier: new RuleBasedPromptClarifier()),
             modelClient,
-            new AgentOrchestratorOptions { MaxIterations = 3 },
-            promptClarifier: new RuleBasedPromptClarifier());
+            new AgentOrchestratorOptions { MaxIterations = 3 });
 
         var response = await orchestrator.ProcessAsync(
             new AgentRequest("Explain the flow", workspace.RootPath));
@@ -1182,20 +1182,22 @@ internal static class ToolTests
         var modelClient = new ScriptedModelClient(_ =>
             throw new InvalidOperationException("The model should not be called before clarification."));
 
+        var evidenceQualityEvaluator = new RuleBasedEvidenceQualityEvaluator();
         var orchestrator = new AgentOrchestrator(
             path => new ITool[]
             {
                 new ListFilesTool(path),
                 new ReadFileTool(path),
-                new SearchFilesTool(path, new RuleBasedEvidenceQualityEvaluator())
+                new SearchFilesTool(path, evidenceQualityEvaluator)
             },
+            CreateDependencies(
+                sessionStore,
+                new RuleBasedFileCompressor(),
+                new RuleBasedSessionSummarizer(evidenceQualityEvaluator),
+                evidenceQualityEvaluator,
+                new RuleBasedPromptClarifier()),
             modelClient,
-            new AgentOrchestratorOptions { MaxIterations = 3 },
-            sessionStore,
-            new RuleBasedFileCompressor(),
-            new RuleBasedSessionSummarizer(new RuleBasedEvidenceQualityEvaluator()),
-            new RuleBasedEvidenceQualityEvaluator(),
-            new RuleBasedPromptClarifier());
+            new AgentOrchestratorOptions { MaxIterations = 3 });
 
         var response = await orchestrator.ProcessAsync(
             new AgentRequest(
@@ -1220,17 +1222,19 @@ internal static class ToolTests
             return new ModelResponse("Grounded answer without clarification.", ResponseId: "resp-clear-prompt");
         });
 
+        var evidenceQualityEvaluator = new RuleBasedEvidenceQualityEvaluator();
         var orchestrator = new AgentOrchestrator(
             path => new ITool[]
             {
                 new ListFilesTool(path),
                 new ReadFileTool(path),
-                new SearchFilesTool(path, new RuleBasedEvidenceQualityEvaluator())
+                new SearchFilesTool(path, evidenceQualityEvaluator)
             },
+            CreateDependencies(
+                evidenceQualityEvaluator: evidenceQualityEvaluator,
+                promptClarifier: new RuleBasedPromptClarifier()),
             modelClient,
-            new AgentOrchestratorOptions { MaxIterations = 3 },
-            evidenceQualityEvaluator: new RuleBasedEvidenceQualityEvaluator(),
-            promptClarifier: new RuleBasedPromptClarifier());
+            new AgentOrchestratorOptions { MaxIterations = 3 });
 
         var response = await orchestrator.ProcessAsync(
             new AgentRequest("Trace how blog creation works across the codebase", workspace.RootPath));
@@ -1245,7 +1249,7 @@ internal static class ToolTests
         using var workspace = new TestWorkspace();
         workspace.WriteText("README.md", "readme");
 
-        var orchestrator = new AgentOrchestrator(Array.Empty<ITool>());
+        var orchestrator = new AgentOrchestrator(Array.Empty<ITool>(), CreateDependencies());
         var response = await orchestrator.ProcessAsync(
             new AgentRequest("Summarize this repository", workspace.RootPath));
 
@@ -1361,11 +1365,9 @@ internal static class ToolTests
                 new ReadFileTool(path),
                 new SearchFilesTool(path)
             },
+            CreateDependencies(sessionStore, fileCompressor, sessionSummarizer),
             modelClient,
-            new AgentOrchestratorOptions { MaxIterations = 4 },
-            sessionStore,
-            fileCompressor,
-            sessionSummarizer);
+            new AgentOrchestratorOptions { MaxIterations = 4 });
 
         var firstResponse = await orchestrator.ProcessAsync(
             new AgentRequest("Summarize the README", workspace.RootPath));
@@ -1436,11 +1438,9 @@ internal static class ToolTests
                 new ReadFileTool(path),
                 new SearchFilesTool(path)
             },
+            CreateDependencies(sessionStore, fileCompressor, sessionSummarizer),
             modelClient,
-            new AgentOrchestratorOptions { MaxIterations = 4 },
-            sessionStore,
-            fileCompressor,
-            sessionSummarizer);
+            new AgentOrchestratorOptions { MaxIterations = 4 });
 
         var firstResponse = await orchestrator.ProcessAsync(
             new AgentRequest("Explain the installer flow", workspace.RootPath));
@@ -1488,19 +1488,21 @@ internal static class ToolTests
                 ResponseId: "resp-feature-follow-up");
         });
 
+        var evidenceQualityEvaluator = new RuleBasedEvidenceQualityEvaluator();
         var orchestrator = new AgentOrchestrator(
             path => new ITool[]
             {
                 new ListFilesTool(path),
                 new ReadFileTool(path),
-                new SearchFilesTool(path, new RuleBasedEvidenceQualityEvaluator())
+                new SearchFilesTool(path, evidenceQualityEvaluator)
             },
+            CreateDependencies(
+                sessionStore,
+                new RuleBasedFileCompressor(),
+                new RuleBasedSessionSummarizer(evidenceQualityEvaluator),
+                evidenceQualityEvaluator),
             modelClient,
-            new AgentOrchestratorOptions { MaxIterations = 3 },
-            sessionStore,
-            new RuleBasedFileCompressor(),
-            new RuleBasedSessionSummarizer(new RuleBasedEvidenceQualityEvaluator()),
-            new RuleBasedEvidenceQualityEvaluator());
+            new AgentOrchestratorOptions { MaxIterations = 3 });
 
         var response = await orchestrator.ProcessAsync(
             new AgentRequest(
@@ -1549,11 +1551,9 @@ internal static class ToolTests
                 new ReadFileTool(path),
                 new SearchFilesTool(path)
             },
+            CreateDependencies(sessionStore),
             modelClient,
-            new AgentOrchestratorOptions { MaxIterations = 3 },
-            sessionStore,
-            fileCompressor: null,
-            sessionSummarizer: null);
+            new AgentOrchestratorOptions { MaxIterations = 3 });
 
         var request = new AgentRequest(
             "Inspect the README",
@@ -1616,11 +1616,12 @@ internal static class ToolTests
                 new ReadFileTool(path),
                 new SearchFilesTool(path)
             },
+            CreateDependencies(
+                sessionStore,
+                new RuleBasedFileCompressor(),
+                new RuleBasedSessionSummarizer()),
             modelClient,
-            new AgentOrchestratorOptions { MaxIterations = 3 },
-            sessionStore,
-            new RuleBasedFileCompressor(),
-            new RuleBasedSessionSummarizer());
+            new AgentOrchestratorOptions { MaxIterations = 3 });
 
         var request = new AgentRequest(
             "Revisit the README",
@@ -1733,12 +1734,13 @@ internal static class ToolTests
                 new ReadFileTool(path),
                 new SearchFilesTool(path, evidenceQualityEvaluator)
             },
+            CreateDependencies(
+                sessionStore,
+                new RuleBasedFileCompressor(),
+                new RuleBasedSessionSummarizer(evidenceQualityEvaluator),
+                evidenceQualityEvaluator),
             modelClient,
-            new AgentOrchestratorOptions { MaxIterations = 3 },
-            sessionStore,
-            new RuleBasedFileCompressor(),
-            new RuleBasedSessionSummarizer(evidenceQualityEvaluator),
-            evidenceQualityEvaluator);
+            new AgentOrchestratorOptions { MaxIterations = 3 });
 
         var request = new AgentRequest(
             "Explain AgentOrchestrator",
@@ -1826,9 +1828,9 @@ internal static class ToolTests
                 new ReadFileTool(path),
                 new SearchFilesTool(path, evidenceQualityEvaluator)
             },
+            CreateDependencies(evidenceQualityEvaluator: evidenceQualityEvaluator),
             modelClient,
-            new AgentOrchestratorOptions { MaxIterations = 6 },
-            evidenceQualityEvaluator: evidenceQualityEvaluator);
+            new AgentOrchestratorOptions { MaxIterations = 6 });
 
         var response = await orchestrator.ProcessAsync(
             new AgentRequest("Search for unzip a file related logic and explain the flow", workspace.RootPath));
@@ -1925,9 +1927,9 @@ internal static class ToolTests
                 new ReadFileTool(path),
                 new SearchFilesTool(path, evidenceQualityEvaluator)
             },
+            CreateDependencies(evidenceQualityEvaluator: evidenceQualityEvaluator),
             modelClient,
-            new AgentOrchestratorOptions { MaxIterations = 6 },
-            evidenceQualityEvaluator: evidenceQualityEvaluator);
+            new AgentOrchestratorOptions { MaxIterations = 6 });
 
         var response = await orchestrator.ProcessAsync(
             new AgentRequest("Explain the post request flow and architecture", workspace.RootPath));
@@ -2017,9 +2019,9 @@ internal static class ToolTests
                 new ReadFileTool(path),
                 new SearchFilesTool(path, evidenceQualityEvaluator)
             },
+            CreateDependencies(evidenceQualityEvaluator: evidenceQualityEvaluator),
             modelClient,
-            new AgentOrchestratorOptions { MaxIterations = 6 },
-            evidenceQualityEvaluator: evidenceQualityEvaluator);
+            new AgentOrchestratorOptions { MaxIterations = 6 });
 
         var response = await orchestrator.ProcessAsync(
             new AgentRequest("Trace how blog creation works across the codebase", workspace.RootPath));
@@ -2092,6 +2094,7 @@ internal static class ToolTests
 
         var orchestrator = new AgentOrchestrator(
             _ => new ITool[] { searchTool },
+            CreateDependencies(),
             modelClient,
             new AgentOrchestratorOptions { MaxIterations = 4 });
 
@@ -2173,6 +2176,7 @@ internal static class ToolTests
 
         var orchestrator = new AgentOrchestrator(
             _ => new ITool[] { searchTool, readTool },
+            CreateDependencies(),
             modelClient,
             new AgentOrchestratorOptions { MaxIterations = 6 });
 
@@ -2317,9 +2321,24 @@ internal static class ToolTests
                     evidenceQualityEvaluator,
                     new LocalSemanticSearchService(path, embeddingService))
             },
+            CreateDependencies(evidenceQualityEvaluator: evidenceQualityEvaluator),
             modelClient,
-            options,
-            evidenceQualityEvaluator: evidenceQualityEvaluator);
+            options);
+    }
+
+    private static AgentOrchestrationDependencies CreateDependencies(
+        IAgentSessionStore? sessionStore = null,
+        IFileCompressor? fileCompressor = null,
+        ISessionSummarizer? sessionSummarizer = null,
+        IEvidenceQualityEvaluator? evidenceQualityEvaluator = null,
+        IPromptClarifier? promptClarifier = null)
+    {
+        return AgentOrchestrationDependencies.CreateDefault(
+            sessionStore,
+            fileCompressor,
+            sessionSummarizer,
+            evidenceQualityEvaluator,
+            promptClarifier);
     }
 
     private static ModelResponse BuildFinalResponseAfterTool(
