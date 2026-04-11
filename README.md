@@ -1,6 +1,6 @@
 # ProjectLens - AI-Powered Developer Workspace Agent
 
-> ProjectLens is a host-agnostic, evidence-driven code analysis agent that retrieves and evaluates code context through bounded tool execution.
+> ProjectLens is a host-agnostic, evidence-driven code analysis agent  with explicit structured evidence extraction that retrieves and evaluates code context through bounded tool execution.
 ProjectLens is a **.NET 8 AI-assisted code analysis agent** that explores and analyzes a local codebase using:
 * 🧠 LLM-guided reasoning
 * 🧩 tool-based orchestration
@@ -86,7 +86,7 @@ Tool Calls (if needed)
 Filesystem + Search Tools
      |
      v
-Evidence Evaluation + Aggregation
+Evidence Extraction + Evaluation + Aggregation
      |
      v
 Compressed Context
@@ -99,6 +99,42 @@ Final Answer
 
 ```
 > The system iteratively retrieves and evaluates evidence before producing a response.
+
+---
+## 🧾 Structured Evidence Model
+
+ProjectLens now treats evidence as a **first-class concept**, not just text.
+
+Each tool execution produces:
+
+- 📄 Prompt-facing text (for LLM reasoning)
+- 📊 Structured evidence items (for internal evaluation)
+
+### EvidenceItem
+
+Each piece of evidence includes:
+
+- **ToolName** – which tool produced it  
+- **SourceId** – file path or logical source  
+- **Content** – snippet or summary  
+- **Kind** – type of evidence:
+  - `SearchHit`
+  - `DirectSnippet`
+  - `FileSummary`
+  - `ToolObservation`
+- **IsPartial** – whether the evidence is incomplete  
+- **Confidence** – deterministic confidence signal (not model-generated)
+
+### Why this matters
+
+This enables:
+
+- future **evidence sufficiency scoring**
+- **coverage-aware reasoning**
+- **convergence decisions**
+- reduced redundant retrieval
+
+👉 The system now knows *what it knows*, not just *what it says*.
 
 ---
 ## 🧠 Evolution of ProjectLens
@@ -290,6 +326,8 @@ ProjectLens:
 * ✅ Multi-file evidence aggregation (bounded scope)
 * ✅ Feature-intent aware exploration (guided file selection)
 * ✅ Confidence-aware conclusions (provisional vs strong understanding)
+* ✅ Structured evidence extraction (EvidenceItem model)
+* ✅ Tool outputs produce both prompt text and machine-readable evidence
 
 ---
 
@@ -477,6 +515,8 @@ If `ApiKey` or `Model` is not configured, ProjectLens automatically switches to 
 - 🌐 Web UI
 - ⚡ Iteration efficiency optimization
 - 🧠 Smarter convergence control
+- 🧠 Evidence sufficiency evaluation
+- 🎯 Convergence decision engine
   
 ---
 
@@ -513,10 +553,10 @@ Each tool represents a capability boundary.
 
 Adding intelligence means adding new capabilities, not rewriting the orchestrator.
 
-It doesn’t just explore and remember — it reasons with awareness of its own knowledge boundaries.
+It doesn’t just explore and remember — it reasons with awareness of its own observed evidence boundaries.
 
 ---
 
 ## 📌 Version
 
-**v0.8 — Hybrid Retrieval + Clarification-Aware Agent**
+**+ v0.9 — Structured Evidence Foundation**
