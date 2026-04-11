@@ -50,6 +50,11 @@ internal static class Program
             ("RuleBasedSessionSummarizer retains multi-file aggregation context", ToolTests.RuleBasedSessionSummarizerRetainsMultiFileAggregationContextAsync),
             ("RuleBasedSessionSummarizer keeps provisional feature flow uncertainty", ToolTests.RuleBasedSessionSummarizerKeepsProvisionalFeatureFlowUncertaintyAsync),
             ("RuleBasedSessionSummarizer promotes strong feature evidence to main-flow context", ToolTests.RuleBasedSessionSummarizerPromotesStrongFeatureEvidenceToMainFlowContextAsync),
+            ("ModelClientFactory returns null when disabled", ToolTests.ModelClientFactoryReturnsNullWhenDisabledAsync),
+            ("ModelClientFactory creates fake provider", ToolTests.ModelClientFactoryCreatesFakeProviderAsync),
+            ("ModelClientFactory leaves unconfigured OpenAI disabled", ToolTests.ModelClientFactoryLeavesUnconfiguredOpenAiDisabledAsync),
+            ("ModelClientFactory creates OpenAI provider", ToolTests.ModelClientFactoryCreatesOpenAiProviderAsync),
+            ("ModelClientFactory rejects unknown provider", ToolTests.ModelClientFactoryRejectsUnknownProviderAsync),
             ("AgentOrchestrator summarizes README and project file", ToolTests.AgentOrchestratorSummarizesWorkspaceAsync),
             ("AgentOrchestrator handles missing optional files", ToolTests.AgentOrchestratorHandlesMissingWorkspaceFilesAsync),
             ("AgentOrchestrator asks for clarification on ambiguous prompts", ToolTests.AgentOrchestratorAsksForClarificationOnAmbiguousPromptsAsync),
@@ -1074,6 +1079,87 @@ internal static class ToolTests
             summary.Contains("Current feature-flow understanding is provisional", StringComparison.Ordinal),
             "Strong feature evidence should be allowed to become main-flow context.");
         return Task.CompletedTask;
+    }
+
+    public static Task ModelClientFactoryReturnsNullWhenDisabledAsync()
+    {
+        IModelClientFactory factory = new DefaultModelClientFactory();
+        var client = factory.Create(new ModelProviderSettings
+        {
+            Provider = ModelProviderNames.None
+        });
+
+        TestAssert.Null(client);
+        return Task.CompletedTask;
+    }
+
+    public static async Task ModelClientFactoryCreatesFakeProviderAsync()
+    {
+        IModelClientFactory factory = new DefaultModelClientFactory();
+        var client = factory.Create(new ModelProviderSettings
+        {
+            Provider = ModelProviderNames.Fake,
+            Model = "local-test"
+        });
+
+        TestAssert.NotNull(client);
+        TestAssert.Equal("FakeModelClient", client!.GetType().Name);
+
+        var response = await client.GenerateAsync(new ModelRequest(
+            "Instructions",
+            [new ModelTextMessage("user", "Hello from the test.")],
+            Array.Empty<ModelToolDefinition>()));
+
+        TestAssert.Equal("Fake model 'local-test' received: Hello from the test.", response.FinalAnswer);
+        TestAssert.Equal("fake-local-test", response.ResponseId);
+    }
+
+    public static Task ModelClientFactoryLeavesUnconfiguredOpenAiDisabledAsync()
+    {
+        IModelClientFactory factory = new DefaultModelClientFactory();
+        var client = factory.Create(new ModelProviderSettings
+        {
+            Provider = ModelProviderNames.OpenAI,
+            Model = "gpt-test"
+        });
+
+        TestAssert.Null(client);
+        return Task.CompletedTask;
+    }
+
+    public static Task ModelClientFactoryCreatesOpenAiProviderAsync()
+    {
+        IModelClientFactory factory = new DefaultModelClientFactory();
+        var client = factory.Create(new ModelProviderSettings
+        {
+            Provider = ModelProviderNames.OpenAI,
+            Model = "gpt-test",
+            ApiKey = "test-key"
+        });
+
+        TestAssert.NotNull(client);
+        TestAssert.Equal("OpenAiModelClient", client!.GetType().Name);
+        return Task.CompletedTask;
+    }
+
+    public static Task ModelClientFactoryRejectsUnknownProviderAsync()
+    {
+        IModelClientFactory factory = new DefaultModelClientFactory();
+
+        try
+        {
+            factory.Create(new ModelProviderSettings
+            {
+                Provider = "UnknownProvider"
+            });
+        }
+        catch (InvalidOperationException exception)
+        {
+            TestAssert.Contains("Unsupported model provider 'UnknownProvider'", exception.Message);
+            return Task.CompletedTask;
+        }
+
+        throw new InvalidOperationException("The factory should reject unknown model providers.");
     }
 
     public static async Task AgentOrchestratorSummarizesWorkspaceAsync()
