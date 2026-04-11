@@ -11,17 +11,16 @@ try
 {
     var settingsPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
     var settings = HostSettingsLoader.Load(settingsPath);
+    var modelSettings = settings.GetModelProviderSettings();
 
-    IModelClient? modelClient = null;
-    if (settings.OpenAI.IsConfigured)
-    {
-        modelClient = new OpenAiModelClient(settings.OpenAI);
-    }
+    IModelClientFactory modelClientFactory = new DefaultModelClientFactory();
+    IModelClient? modelClient = modelClientFactory.Create(modelSettings);
 
     IAgentSessionStore sessionStore = new FileBasedAgentSessionStore(AppContext.BaseDirectory);
     IEvidenceQualityEvaluator evidenceQualityEvaluator = new RuleBasedEvidenceQualityEvaluator();
-    IEmbeddingService embeddingService = settings.OpenAI.IsEmbeddingConfigured
-        ? new OpenAiEmbeddingService(settings.OpenAI)
+    var openAiSettings = settings.GetOpenAiSettings();
+    IEmbeddingService embeddingService = openAiSettings.IsEmbeddingConfigured
+        ? new OpenAiEmbeddingService(openAiSettings)
         : new DeterministicEmbeddingService();
     IFileCompressor fileCompressor = new RuleBasedFileCompressor();
     IPromptClarifier promptClarifier = new RuleBasedPromptClarifier();
@@ -47,13 +46,13 @@ try
         modelClient,
         new AgentOrchestratorOptions
         {
-            MaxIterations = settings.OpenAI.MaxIterations
+            MaxIterations = modelSettings.MaxIterations
         });
 
     Console.WriteLine("ProjectLens host is ready.");
     Console.WriteLine(modelClient is null
         ? "Model client is not configured. Rule-based orchestration fallback will be used."
-        : $"OpenAI model client configured for model '{settings.OpenAI.Model}'.");
+        : $"Model provider '{modelSettings.NormalizedProvider}' configured for model '{modelSettings.Model}'.");
     Console.WriteLine($"Loaded settings from {settingsPath}.");
 
     var workspacePath = ReadRequiredInput("Enter workspace path:");
@@ -174,5 +173,44 @@ internal static class HostSettingsLoader
 
 internal sealed record HostSettings
 {
+    public ModelProviderSettings Model { get; init; } = new();
+
     public OpenAiModelClientOptions OpenAI { get; init; } = new();
+
+    public ModelProviderSettings GetModelProviderSettings()
+    {
+        if (!string.IsNullOrWhiteSpace(Model.Provider) ||
+            !string.IsNullOrWhiteSpace(Model.Model) ||
+            !string.IsNullOrWhiteSpace(Model.ApiKey) ||
+            !string.IsNullOrWhiteSpace(Model.BaseUrl) ||
+            Model.MaxIterations != 8)
+        {
+            return Model;
+        }
+
+        return new ModelProviderSettings
+        {
+            Provider = OpenAI.IsConfigured ? ModelProviderNames.OpenAI : ModelProviderNames.None,
+            Model = OpenAI.Model,
+            ApiKey = OpenAI.ApiKey,
+            BaseUrl = OpenAI.BaseUrl,
+            MaxIterations = OpenAI.MaxIterations
+        };
+    }
+
+    public OpenAiModelClientOptions GetOpenAiSettings()
+    {
+        if (string.Equals(Model.NormalizedProvider, ModelProviderNames.OpenAI, StringComparison.OrdinalIgnoreCase))
+        {
+            return OpenAI with
+            {
+                ApiKey = string.IsNullOrWhiteSpace(Model.ApiKey) ? OpenAI.ApiKey : Model.ApiKey,
+                Model = string.IsNullOrWhiteSpace(Model.Model) ? OpenAI.Model : Model.Model,
+                BaseUrl = string.IsNullOrWhiteSpace(Model.BaseUrl) ? OpenAI.BaseUrl : Model.BaseUrl,
+                MaxIterations = Model.MaxIterations
+            };
+        }
+
+        return OpenAI;
+    }
 }
