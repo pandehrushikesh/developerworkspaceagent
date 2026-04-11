@@ -179,11 +179,7 @@ internal sealed record HostSettings
 
     public ModelProviderSettings GetModelProviderSettings()
     {
-        if (!string.IsNullOrWhiteSpace(Model.Provider) ||
-            !string.IsNullOrWhiteSpace(Model.Model) ||
-            !string.IsNullOrWhiteSpace(Model.ApiKey) ||
-            !string.IsNullOrWhiteSpace(Model.BaseUrl) ||
-            Model.MaxIterations != 8)
+        if (!IsNoProviderSelected(Model.Provider))
         {
             return Model;
         }
@@ -200,7 +196,7 @@ internal sealed record HostSettings
 
     public OpenAiModelClientOptions GetOpenAiSettings()
     {
-        if (string.Equals(Model.NormalizedProvider, ModelProviderNames.OpenAI, StringComparison.OrdinalIgnoreCase))
+        if (IsProvider(Model.Provider, ModelProviderNames.OpenAI))
         {
             return OpenAI with
             {
@@ -212,5 +208,16 @@ internal sealed record HostSettings
         }
 
         return OpenAI;
+    }
+
+    private static bool IsNoProviderSelected(string? provider)
+    {
+        return string.IsNullOrWhiteSpace(provider) ||
+            IsProvider(provider, ModelProviderNames.None);
+    }
+
+    private static bool IsProvider(string? provider, string expectedProvider)
+    {
+        return string.Equals(provider?.Trim(), expectedProvider, StringComparison.OrdinalIgnoreCase);
     }
 }
