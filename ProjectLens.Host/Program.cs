@@ -26,6 +26,12 @@ try
     IFileCompressor fileCompressor = new RuleBasedFileCompressor();
     IPromptClarifier promptClarifier = new RuleBasedPromptClarifier();
     ISessionSummarizer sessionSummarizer = new RuleBasedSessionSummarizer(evidenceQualityEvaluator);
+    var orchestrationDependencies = AgentOrchestrationDependencies.CreateDefault(
+        sessionStore,
+        fileCompressor,
+        sessionSummarizer,
+        evidenceQualityEvaluator,
+        promptClarifier);
 
     var orchestrator = new AgentOrchestrator(
         workspacePath => new ITool[]
@@ -37,16 +43,12 @@ try
                 evidenceQualityEvaluator,
                 new LocalSemanticSearchService(workspacePath, embeddingService))
         },
+        orchestrationDependencies,
         modelClient,
         new AgentOrchestratorOptions
         {
             MaxIterations = settings.OpenAI.MaxIterations
-        },
-        sessionStore,
-        fileCompressor,
-        sessionSummarizer,
-        evidenceQualityEvaluator,
-        promptClarifier);
+        });
 
     Console.WriteLine("ProjectLens host is ready.");
     Console.WriteLine(modelClient is null
