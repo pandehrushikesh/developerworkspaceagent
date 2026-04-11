@@ -9,6 +9,7 @@ namespace ProjectLens.Infrastructure.Tools;
 public sealed class SearchFilesTool : ITool
 {
     private const int MaxSnippetLength = 160;
+    private const string KeywordStrategy = "keyword";
 
     private readonly IEvidenceQualityEvaluator _evidenceQualityEvaluator;
     private readonly WorkspacePathResolver _pathResolver;
@@ -164,6 +165,8 @@ public sealed class SearchFilesTool : ITool
         IReadOnlyCollection<SearchFileMatch> semanticMatches,
         IReadOnlyCollection<SearchFileMatch> rankedMatches)
     {
+        var effectiveStrategy = DetermineRetrievalMode(keywordMatches.Count, semanticMatches.Count);
+
         return new SearchFilesResponse(
             _pathResolver.ToRelativePath(context.TargetPath),
             context.Request.Query,
@@ -172,9 +175,11 @@ public sealed class SearchFilesTool : ITool
             context.Request.MaxResults,
             rankedMatches.Count,
             rankedMatches,
-            DetermineRetrievalMode(keywordMatches.Count, semanticMatches.Count),
+            effectiveStrategy,
             keywordMatches.Count,
-            semanticMatches.Count);
+            semanticMatches.Count,
+            KeywordStrategy,
+            effectiveStrategy);
     }
 
     private static SearchFilesRequest ParseRequest(IReadOnlyDictionary<string, string> arguments)
