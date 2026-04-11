@@ -33,21 +33,23 @@ public sealed class DefaultToolOutputAdapter : IToolOutputAdapter
         if (!executionResult.Success)
         {
             return new ToolOutputAdapterResult(
-                executionResult.ErrorMessage ?? "Tool execution failed.",
+                new ToolAdaptationResult(
+                    executionResult.ErrorMessage ?? "Tool execution failed.",
+                    Array.Empty<EvidenceItem>()),
                 aggregatedEvidenceContext);
         }
 
-        var output = CreateToolContextOutput(
+        var adaptation = CreateToolContextOutput(
             toolCall.ToolName,
             executionResult.Output,
             userPrompt,
             aggregatedEvidenceContext,
             out var updatedAggregatedEvidenceContext);
 
-        return new ToolOutputAdapterResult(output, updatedAggregatedEvidenceContext);
+        return new ToolOutputAdapterResult(adaptation, updatedAggregatedEvidenceContext);
     }
 
-    private string CreateToolContextOutput(
+    private ToolAdaptationResult CreateToolContextOutput(
         string toolName,
         string? rawToolOutput,
         string userPrompt,
@@ -57,14 +59,16 @@ public sealed class DefaultToolOutputAdapter : IToolOutputAdapter
         updatedAggregatedEvidenceContext = aggregatedEvidenceContext;
         if (string.IsNullOrWhiteSpace(rawToolOutput))
         {
-            return string.Empty;
+            return new ToolAdaptationResult(string.Empty, Array.Empty<EvidenceItem>());
         }
 
         if (string.Equals(toolName, ReadFileToolName, StringComparison.OrdinalIgnoreCase))
         {
             if (!TryParseReadFilePayload(rawToolOutput, out var path, out var content, out var isTruncated, out var characterCount))
             {
-                return rawToolOutput;
+                return new ToolAdaptationResult(
+                    rawToolOutput,
+                    [CreateToolObservation(toolName, toolName, rawToolOutput, isPartial: false)]);
             }
 
             var compressedOutput = _fileCompressor?.Compress(path, content, userPrompt) ?? rawToolOutput;
@@ -76,7 +80,19 @@ public sealed class DefaultToolOutputAdapter : IToolOutputAdapter
                 aggregatedEvidenceContext,
                 path,
                 baseOutput);
-            return AppendAggregatedEvidenceContext(baseOutput, updatedAggregatedEvidenceContext);
+            var promptText = AppendAggregatedEvidenceContext(baseOutput, updatedAggregatedEvidenceContext);
+            var evidenceKind = _fileCompressor is null
+                ? EvidenceKind.DirectSnippet
+                : EvidenceKind.FileSummary;
+            var evidence = new EvidenceItem(
+                toolName,
+                path,
+                CreateSnippet(_fileCompressor is null ? content : compressedOutput),
+                evidenceKind,
+                isTruncated || _fileCompressor is not null,
+                isTruncated ? 0.8 : 1.0);
+
+            return new ToolAdaptationResult(promptText, [evidence]);
         }
 
         if (string.Equals(toolName, SearchFilesToolName, StringComparison.OrdinalIgnoreCase))
@@ -85,14 +101,17 @@ public sealed class DefaultToolOutputAdapter : IToolOutputAdapter
                 rawToolOutput,
                 userPrompt,
                 aggregatedEvidenceContext);
-            var searchSummary = SummarizeSearchResults(rawToolOutput, userPrompt, _evidenceQualityEvaluator);
-            return AppendAggregatedEvidenceContext(searchSummary, updatedAggregatedEvidenceContext);
+            var searchAdaptation = SummarizeSearchResults(rawToolOutput, userPrompt, _evidenceQualityEvaluator);
+            var promptText = AppendAggregatedEvidenceContext(searchAdaptation.PromptText, updatedAggregatedEvidenceContext);
+            return searchAdaptation with { PromptText = promptText };
         }
 
-        return rawToolOutput;
+        return new ToolAdaptationResult(
+            rawToolOutput,
+            [CreateToolObservation(toolName, toolName, rawToolOutput, isPartial: false)]);
     }
 
-    private static string SummarizeSearchResults(
+    private static ToolAdaptationResult SummarizeSearchResults(
         string rawToolOutput,
         string userPrompt,
         IEvidenceQualityEvaluator? evidenceQualityEvaluator)
@@ -108,6 +127,12 @@ public sealed class DefaultToolOutputAdapter : IToolOutputAdapter
             var retrievalMode = root.TryGetProperty("RetrievalMode", out var retrievalModeElement)
                 ? retrievalModeElement.GetString() ?? "keyword"
                 : "keyword";
+            var requestedStrategy = root.TryGetProperty("RequestedStrategy", out var requestedStrategyElement)
+                ? requestedStrategyElement.GetString() ?? "keyword"
+                : "keyword";
+            var effectiveStrategy = root.TryGetProperty("EffectiveStrategy", out var effectiveStrategyElement)
+                ? effectiveStrategyElement.GetString() ?? retrievalMode
+                : retrievalMode;
             var keywordMatchCount = root.TryGetProperty("KeywordMatchCount", out var keywordCountElement)
                 ? keywordCountElement.GetInt32()
                 : totalMatches;
@@ -129,11 +154,23 @@ public sealed class DefaultToolOutputAdapter : IToolOutputAdapter
             var searchEvidence = evidenceQualityEvaluator is null
                 ? new SearchEvidenceAssessment(matches.Take(5).ToArray(), false, matches.Any(), string.Empty)
                 : evidenceQualityEvaluator.AssessSearchEvidence(matches, query ?? userPrompt, 5);
+            var evidenceItems = searchEvidence.RankedMatches
+                .Select(match => new EvidenceItem(
+                    SearchFilesToolName,
+                    match.Path,
+                    match.Snippet,
+                    EvidenceKind.SearchHit,
+                    true,
+                    match.MatchKind.Equals("semantic", StringComparison.OrdinalIgnoreCase)
+                        ? Math.Clamp(match.SimilarityScore, 0, 1)
+                        : 1.0))
+                .ToArray();
 
             var builder = new StringBuilder();
             builder.AppendLine($"search_files query: {query}");
             builder.AppendLine($"Total matches: {totalMatches}");
-            builder.AppendLine($"Retrieval mode: {retrievalMode} (keyword candidates: {keywordMatchCount}, semantic candidates: {semanticMatchCount})");
+            builder.AppendLine($"Requested strategy: {requestedStrategy}");
+            builder.AppendLine($"Effective strategy: {effectiveStrategy} (keyword candidates: {keywordMatchCount}, semantic candidates: {semanticMatchCount})");
             builder.AppendLine("Evidence basis: search_files returns bounded filename/snippet candidates only; semantic matches come from chunk-level similarity and still require read_file before making file-level claims.");
 
             if (searchEvidence.IsWeakEvidence)
@@ -149,11 +186,13 @@ public sealed class DefaultToolOutputAdapter : IToolOutputAdapter
                 builder.AppendLine($"- {match.Path}{semanticSuffix}: {match.Snippet}");
             }
 
-            return builder.ToString().TrimEnd();
+            return new ToolAdaptationResult(builder.ToString().TrimEnd(), evidenceItems);
         }
         catch
         {
-            return rawToolOutput;
+            return new ToolAdaptationResult(
+                rawToolOutput,
+                [CreateToolObservation(SearchFilesToolName, SearchFilesToolName, rawToolOutput, isPartial: false)]);
         }
     }
 
@@ -454,6 +493,21 @@ public sealed class DefaultToolOutputAdapter : IToolOutputAdapter
         }
 
         return score;
+    }
+
+    private static EvidenceItem CreateToolObservation(
+        string toolName,
+        string sourceId,
+        string content,
+        bool isPartial)
+    {
+        return new EvidenceItem(
+            toolName,
+            sourceId,
+            CreateSnippet(content),
+            EvidenceKind.ToolObservation,
+            isPartial,
+            0.7);
     }
 
     private static string CreateSnippet(string content)

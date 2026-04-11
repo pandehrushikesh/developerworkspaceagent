@@ -10,4 +10,6 @@ public sealed record SearchFilesResponse(
     IReadOnlyCollection<SearchFileMatch> Matches,
     string RetrievalMode = "keyword",
     int KeywordMatchCount = 0,
-    int SemanticMatchCount = 0);
+    int SemanticMatchCount = 0,
+    string RequestedStrategy = "keyword",
+    string EffectiveStrategy = "keyword");

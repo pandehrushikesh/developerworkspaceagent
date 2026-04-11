@@ -38,6 +38,8 @@ internal static class Program
             ("SearchFilesTool keeps semantic retrieval bounded by top K", ToolTests.SearchFilesToolKeepsSemanticRetrievalBoundedByTopKAsync),
             ("SearchFilesTool ranks source files above generated artifacts", ToolTests.SearchFilesToolRanksSourceFilesAboveGeneratedArtifactsAsync),
             ("SearchFilesTool prefers feature-related files over generic setup for feature tracing", ToolTests.SearchFilesToolPrefersFeatureFilesOverGenericSetupAsync),
+            ("ToolOutputAdapter returns search prompt text and evidence", ToolTests.ToolOutputAdapterReturnsSearchPromptTextAndEvidenceAsync),
+            ("ToolOutputAdapter returns read file evidence", ToolTests.ToolOutputAdapterReturnsReadFileEvidenceAsync),
             ("InMemoryAgentSessionStore saves and loads state", ToolTests.InMemoryAgentSessionStoreSavesAndLoadsStateAsync),
             ("FileBasedAgentSessionStore saves and reloads state across instances", ToolTests.FileBasedAgentSessionStoreSavesAndReloadsStateAcrossInstancesAsync),
             ("FileBasedAgentSessionStore returns null for missing sessions", ToolTests.FileBasedAgentSessionStoreReturnsNullForMissingSessionAsync),
@@ -577,8 +579,9 @@ internal static class ToolTests
         var response = Deserialize<SearchFilesResponse>(result.Output);
 
         TestAssert.True(
-            response.RetrievalMode is "semantic" or "hybrid",
+            response.EffectiveStrategy is "semantic" or "hybrid",
             "Conceptual retrieval should activate semantic search.");
+        TestAssert.Equal("keyword", response.RequestedStrategy);
         TestAssert.Equal("src/Security/JwtGuard.cs", response.Matches.First().Path);
         TestAssert.True(
             response.Matches.First().MatchKind is "semantic" or "keyword",
@@ -603,8 +606,11 @@ internal static class ToolTests
         TestAssert.True(result.Success, "The tool should succeed.");
         var response = Deserialize<SearchFilesResponse>(result.Output);
 
-        TestAssert.Equal("keyword", response.RetrievalMode);
-        TestAssert.Equal("keyword", response.Matches.Single().MatchKind);
+        TestAssert.Equal("keyword", response.RequestedStrategy);
+        TestAssert.Equal("hybrid", response.EffectiveStrategy);
+        TestAssert.Equal(response.EffectiveStrategy, response.RetrievalMode);
+        TestAssert.True(response.KeywordMatchCount > 0, "Keyword-first execution should preserve keyword candidate counts.");
+        TestAssert.True(response.SemanticMatchCount > 0, "Effective hybrid execution should report semantic broadening.");
     }
 
     public static async Task SearchFilesToolKeepsSemanticRetrievalBoundedByTopKAsync()
@@ -704,6 +710,91 @@ internal static class ToolTests
         TestAssert.False(
             string.Equals(response.Matches.First().Path, "MyBlog.Api/Program.cs", StringComparison.Ordinal),
             "Feature tracing should not default to Program.cs.");
+    }
+
+    public static Task ToolOutputAdapterReturnsSearchPromptTextAndEvidenceAsync()
+    {
+        IToolOutputAdapter adapter = new DefaultToolOutputAdapter();
+        var result = adapter.BuildToolConversationOutput(
+            new ModelToolCall(
+                "call-search",
+                "search_files",
+                new Dictionary<string, string> { ["query"] = "ProjectLens" }),
+            new ToolExecutionResult(
+                "search_files",
+                true,
+                """
+                {
+                  "SearchRoot": ".",
+                  "Query": "ProjectLens",
+                  "FilePattern": "*",
+                  "CaseSensitive": false,
+                  "MaxResults": 5,
+                  "TotalMatches": 1,
+                  "Matches": [
+                    {
+                      "Path": "README.md",
+                      "LineNumber": 1,
+                      "Snippet": "ProjectLens helps inspect repositories.",
+                      "MatchKind": "keyword"
+                    }
+                  ],
+                  "RetrievalMode": "keyword",
+                  "KeywordMatchCount": 1,
+                  "SemanticMatchCount": 0,
+                  "RequestedStrategy": "keyword",
+                  "EffectiveStrategy": "keyword"
+                }
+                """),
+            "Find ProjectLens",
+            null);
+
+        TestAssert.Contains("search_files query: ProjectLens", result.Output);
+        TestAssert.Contains("Requested strategy: keyword", result.Output);
+        TestAssert.Contains("Effective strategy: keyword", result.Output);
+        TestAssert.Equal(1, result.EvidenceItems.Count);
+
+        var evidence = result.EvidenceItems.Single();
+        TestAssert.Equal("search_files", evidence.ToolName);
+        TestAssert.Equal("README.md", evidence.SourceId);
+        TestAssert.Equal(EvidenceKind.SearchHit, evidence.Kind);
+        TestAssert.True(evidence.IsPartial, "Search hits are snippet-level candidate evidence.");
+        TestAssert.Contains("ProjectLens helps inspect repositories.", evidence.Content);
+        return Task.CompletedTask;
+    }
+
+    public static Task ToolOutputAdapterReturnsReadFileEvidenceAsync()
+    {
+        IToolOutputAdapter adapter = new DefaultToolOutputAdapter();
+        var result = adapter.BuildToolConversationOutput(
+            new ModelToolCall(
+                "call-read",
+                "read_file",
+                new Dictionary<string, string> { ["path"] = "README.md" }),
+            new ToolExecutionResult(
+                "read_file",
+                true,
+                """
+                {
+                  "Path": "README.md",
+                  "Content": "ProjectLens reads repositories through bounded tools.",
+                  "IsTruncated": false,
+                  "CharacterCount": 55
+                }
+                """),
+            "Summarize README",
+            null);
+
+        TestAssert.Contains("Evidence basis: read_file returned a bounded excerpt", result.Output);
+        TestAssert.Equal(1, result.EvidenceItems.Count);
+
+        var evidence = result.EvidenceItems.Single();
+        TestAssert.Equal("read_file", evidence.ToolName);
+        TestAssert.Equal("README.md", evidence.SourceId);
+        TestAssert.Equal(EvidenceKind.DirectSnippet, evidence.Kind);
+        TestAssert.False(evidence.IsPartial, "The read evidence should not be partial when the file output is not truncated or compressed.");
+        TestAssert.Contains("ProjectLens reads repositories through bounded tools.", evidence.Content);
+        return Task.CompletedTask;
     }
 
     public static async Task InMemoryAgentSessionStoreSavesAndLoadsStateAsync()
