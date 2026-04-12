@@ -10,6 +10,9 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
 {
     private const string ListFilesToolName = "list_files";
     private const string ReadFileToolName = "read_file";
+    private const string SearchFilesToolName = "search_files";
+    private const int MaxSearchFilesCallsPerIteration = 1;
+    private const int MaxReadFileCallsPerIteration = 2;
 
     private readonly IInstructionBuilder _instructionBuilder;
     private readonly IEvidenceEvaluator _evidenceEvaluator;
@@ -131,6 +134,13 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             var toolCalls = modelResponse.ToolCalls?.Where(call => !string.IsNullOrWhiteSpace(call.ToolName)).ToArray()
                 ?? Array.Empty<ModelToolCall>();
 
+            if (ShouldAcceptFinalAnswerFromConvergence(modelResponse.FinalAnswer, toolCalls, latestConvergenceEvaluation))
+            {
+                steps.Add(new AgentExecutionStep(
+                    $"Model returned a final answer on iteration {iteration}; convergence guidance allowed finalization."));
+                return new AgentResponse(modelResponse.FinalAnswer!, steps.ToArray(), toolResults);
+            }
+
             var finalAnswerDecision = _recoveryPolicy.EvaluateFinalAnswer(
                 modelResponse.FinalAnswer,
                 toolCalls,
@@ -167,8 +177,33 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             steps.Add(new AgentExecutionStep(
                 $"Model requested {toolCalls.Length} tool call(s) on iteration {iteration}."));
 
+            var searchFilesCallsThisIteration = 0;
+            var readFileCallsThisIteration = 0;
             foreach (var toolCall in toolCalls)
             {
+                if (ExceedsFetchBudget(
+                    toolCall.ToolName,
+                    ref searchFilesCallsThisIteration,
+                    ref readFileCallsThisIteration))
+                {
+                    consecutiveNoProgressCount++;
+                    latestConvergenceEvaluation = EvaluateConvergence(
+                        evidenceItems,
+                        iteration,
+                        duplicateToolCallCount,
+                        consecutiveNoProgressCount,
+                        hadToolFailure: false,
+                        newEvidenceCount: 0);
+                    sessionState = await HandleFetchBudgetExceededAsync(
+                        toolCall,
+                        sessionState,
+                        conversation,
+                        steps,
+                        latestConvergenceEvaluation,
+                        cancellationToken);
+                    continue;
+                }
+
                 var toolCallSignature = CreateToolCallSignature(toolCall);
                 if (!executedToolCalls.Add(toolCallSignature))
                 {
@@ -341,6 +376,36 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             cancellationToken);
     }
 
+    private async Task<AgentSessionState?> HandleFetchBudgetExceededAsync(
+        ModelToolCall toolCall,
+        AgentSessionState? sessionState,
+        ICollection<ModelConversationItem> conversation,
+        ICollection<AgentExecutionStep> steps,
+        ConvergenceEvaluation convergenceEvaluation,
+        CancellationToken cancellationToken)
+    {
+        var budgetMessage = BuildFetchBudgetExceededMessage(toolCall.ToolName);
+        var modelFacingMessage = AppendConvergenceGuidance(
+            budgetMessage,
+            convergenceEvaluation);
+
+        steps.Add(new AgentExecutionStep(
+            $"Skipped tool call '{toolCall.ToolName}' because the per-iteration fetch budget was reached.",
+            false));
+
+        conversation.Add(new ModelToolResultMessage(
+            toolCall.CallId,
+            toolCall.ToolName,
+            modelFacingMessage));
+
+        return await _sessionContextService.UpdateAsync(
+            sessionState,
+            toolCall.ToolName,
+            budgetMessage,
+            null,
+            cancellationToken);
+    }
+
     private ConvergenceEvaluation EvaluateConvergence(
         IReadOnlyCollection<EvidenceItem> evidenceItems,
         int iteration,
@@ -382,6 +447,54 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         return builder.ToString();
     }
 
+    private static bool ShouldAcceptFinalAnswerFromConvergence(
+        string? finalAnswer,
+        IReadOnlyCollection<ModelToolCall> toolCalls,
+        ConvergenceEvaluation? convergenceEvaluation)
+    {
+        if (string.IsNullOrWhiteSpace(finalAnswer) || toolCalls.Count > 0)
+        {
+            return false;
+        }
+
+        return convergenceEvaluation?.Decision.DecisionType is
+            ConvergenceDecisionType.FinalizePartialAnswer or
+            ConvergenceDecisionType.FinalizeConfidentAnswer;
+    }
+
+    private static bool ExceedsFetchBudget(
+        string toolName,
+        ref int searchFilesCallsThisIteration,
+        ref int readFileCallsThisIteration)
+    {
+        if (string.Equals(toolName, SearchFilesToolName, StringComparison.OrdinalIgnoreCase))
+        {
+            searchFilesCallsThisIteration++;
+            return searchFilesCallsThisIteration > MaxSearchFilesCallsPerIteration;
+        }
+
+        if (string.Equals(toolName, ReadFileToolName, StringComparison.OrdinalIgnoreCase))
+        {
+            readFileCallsThisIteration++;
+            return readFileCallsThisIteration > MaxReadFileCallsPerIteration;
+        }
+
+        return false;
+    }
+
+    private static string BuildFetchBudgetExceededMessage(string toolName)
+    {
+        var toolGuidance = string.Equals(toolName, ReadFileToolName, StringComparison.OrdinalIgnoreCase)
+            ? "Avoid reading too many files. Focus on the most relevant sources."
+            : "Avoid running too many searches. Focus on the strongest query or change strategy.";
+
+        return $"""
+            Fetch budget reached for this iteration.
+            {toolGuidance}
+            The skipped tool call was not executed.
+            """;
+    }
+
     private static string BuildConvergenceGuidance(ConvergenceEvaluation convergenceEvaluation)
     {
         var assessment = convergenceEvaluation.Assessment;
@@ -398,6 +511,11 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         builder.AppendLine("- Avoid: repeating the same tool call");
         builder.AppendLine("- If previous tool call did not produce new information, change strategy.");
         builder.AppendLine("- Prefer finalizing a partial answer instead of looping.");
+        if (decision.DecisionType == ConvergenceDecisionType.FinalizePartialAnswer)
+        {
+            builder.AppendLine("- STOP further tool calls if no meaningful new evidence is found.");
+            builder.AppendLine("- Provide a partial answer with clear limitations.");
+        }
 
         var actionGuidance = MapDecisionToGuidance(decision);
         if (!string.IsNullOrWhiteSpace(actionGuidance))
@@ -433,7 +551,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             ConvergenceDecisionType.ContinueWithDeeperRead =>
                 "Read the most relevant candidate file in more depth before making file-level claims.",
             ConvergenceDecisionType.FinalizePartialAnswer =>
-                "Answer with explicit limitations; do not continue unnecessary tool calls.",
+                "Answer with explicit limitations; do not continue unnecessary tool calls. STOP further tool calls if no meaningful new evidence is found.",
             ConvergenceDecisionType.FinalizeConfidentAnswer =>
                 "Generate a final answer now and ground it in the observed evidence.",
             _ => decision.Guidance ?? string.Empty
