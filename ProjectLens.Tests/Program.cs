@@ -51,6 +51,10 @@ internal static class Program
             ("Convergence policy deepens mostly partial evidence", ToolTests.ConvergencePolicyDeepensMostlyPartialEvidenceAsync),
             ("Convergence policy finalizes partial answer under progress pressure", ToolTests.ConvergencePolicyFinalizesPartialAnswerUnderProgressPressureAsync),
             ("Convergence policy handles mixed moderate evidence deterministically", ToolTests.ConvergencePolicyHandlesMixedModerateEvidenceDeterministicallyAsync),
+            ("AgentOrchestrator injects deeper-read guidance for search-only evidence", ToolTests.AgentOrchestratorInjectsDeeperReadGuidanceForSearchOnlyEvidenceAsync),
+            ("AgentOrchestrator injects broader-search guidance for narrow evidence", ToolTests.AgentOrchestratorInjectsBroaderSearchGuidanceForNarrowEvidenceAsync),
+            ("AgentOrchestrator injects partial-finalization guidance after no progress", ToolTests.AgentOrchestratorInjectsPartialFinalizationGuidanceAfterNoProgressAsync),
+            ("AgentOrchestrator injects confident-finalization guidance for strong evidence", ToolTests.AgentOrchestratorInjectsConfidentFinalizationGuidanceForStrongEvidenceAsync),
             ("InMemoryAgentSessionStore saves and loads state", ToolTests.InMemoryAgentSessionStoreSavesAndLoadsStateAsync),
             ("FileBasedAgentSessionStore saves and reloads state across instances", ToolTests.FileBasedAgentSessionStoreSavesAndReloadsStateAcrossInstancesAsync),
             ("FileBasedAgentSessionStore returns null for missing sessions", ToolTests.FileBasedAgentSessionStoreReturnsNullForMissingSessionAsync),
@@ -1139,6 +1143,247 @@ internal static class ToolTests
             evidenceEvaluator.Assess(evidenceItems),
             evidenceItems,
             context ?? new ConvergenceContext());
+    }
+
+    public static async Task AgentOrchestratorInjectsDeeperReadGuidanceForSearchOnlyEvidenceAsync()
+    {
+        using var workspace = new TestWorkspace();
+        var searchTool = new CountingTool(
+            "search_files",
+            "Searches files.",
+            new Dictionary<string, string>
+            {
+                ["query"] = "Query text.",
+                ["path"] = "Search path."
+            },
+            _ => new ToolExecutionResult(
+                "search_files",
+                true,
+                """
+                {
+                  "Query": "AgentOrchestrator",
+                  "TotalMatches": 1,
+                  "Matches": [
+                    {
+                      "Path": "ProjectLens.Application/AgentOrchestrator.cs",
+                      "LineNumber": 1,
+                      "Snippet": "public sealed class AgentOrchestrator",
+                      "MatchKind": "keyword"
+                    }
+                  ],
+                  "RetrievalMode": "keyword",
+                  "RequestedStrategy": "keyword",
+                  "EffectiveStrategy": "keyword",
+                  "KeywordMatchCount": 1,
+                  "SemanticMatchCount": 0
+                }
+                """));
+        var callCount = 0;
+        var modelClient = new ScriptedModelClient(request =>
+        {
+            callCount++;
+            return callCount switch
+            {
+                1 => new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-search-guidance",
+                            "search_files",
+                            new Dictionary<string, string>
+                            {
+                                ["query"] = "AgentOrchestrator",
+                                ["path"] = "."
+                            })
+                    }),
+                2 => BuildFinalResponseAfterConvergenceGuidance(
+                    request,
+                    "call-search-guidance",
+                    ConvergenceDecisionType.ContinueWithDeeperRead,
+                    "Read the most relevant candidate file"),
+                _ => throw new InvalidOperationException("Unexpected model invocation.")
+            };
+        });
+
+        var orchestrator = new AgentOrchestrator(
+            _ => new ITool[] { searchTool },
+            CreateDependencies(),
+            modelClient,
+            new AgentOrchestratorOptions { MaxIterations = 3 });
+
+        var response = await orchestrator.ProcessAsync(
+            new AgentRequest("Find AgentOrchestrator", workspace.RootPath));
+
+        TestAssert.True(response.Success, "The orchestrator should continue with guidance after search evidence.");
+        TestAssert.Equal(1, searchTool.ExecutionCount);
+    }
+
+    public static async Task AgentOrchestratorInjectsBroaderSearchGuidanceForNarrowEvidenceAsync()
+    {
+        using var workspace = new TestWorkspace();
+        var readTool = new CountingTool(
+            "read_file",
+            "Reads files.",
+            new Dictionary<string, string> { ["path"] = "File path." },
+            _ => new ToolExecutionResult(
+                "read_file",
+                true,
+                """{"Path":"ProjectLens.Application/AgentOrchestrator.cs","Content":"public sealed class AgentOrchestrator {}","IsTruncated":false,"CharacterCount":42}"""));
+        var callCount = 0;
+        var modelClient = new ScriptedModelClient(request =>
+        {
+            callCount++;
+            return callCount switch
+            {
+                1 => new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-read-narrow",
+                            "read_file",
+                            new Dictionary<string, string>
+                            {
+                                ["path"] = "ProjectLens.Application/AgentOrchestrator.cs"
+                            })
+                    }),
+                2 => BuildFinalResponseAfterConvergenceGuidance(
+                    request,
+                    "call-read-narrow",
+                    ConvergenceDecisionType.ContinueWithBroaderSearch,
+                    "Explore different files"),
+                _ => throw new InvalidOperationException("Unexpected model invocation.")
+            };
+        });
+
+        var orchestrator = new AgentOrchestrator(
+            _ => new ITool[] { readTool },
+            CreateDependencies(),
+            modelClient,
+            new AgentOrchestratorOptions { MaxIterations = 3 });
+
+        var response = await orchestrator.ProcessAsync(
+            new AgentRequest("Explain AgentOrchestrator", workspace.RootPath));
+
+        TestAssert.True(response.Success, "The orchestrator should continue with broader-search guidance.");
+        TestAssert.Equal(1, readTool.ExecutionCount);
+    }
+
+    public static async Task AgentOrchestratorInjectsPartialFinalizationGuidanceAfterNoProgressAsync()
+    {
+        using var workspace = new TestWorkspace();
+        var readTool = new CountingTool(
+            "read_file",
+            "Reads files.",
+            new Dictionary<string, string> { ["path"] = "File path." },
+            _ => new ToolExecutionResult(
+                "read_file",
+                true,
+                """{"Path":"ProjectLens.Application/AgentOrchestrator.cs","Content":"public sealed class AgentOrchestrator {}","IsTruncated":false,"CharacterCount":42}"""));
+        var callCount = 0;
+        var modelClient = new ScriptedModelClient(request =>
+        {
+            callCount++;
+            return callCount switch
+            {
+                1 => new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-read-progress",
+                            "read_file",
+                            new Dictionary<string, string>
+                            {
+                                ["path"] = "ProjectLens.Application/AgentOrchestrator.cs"
+                            })
+                    }),
+                2 => new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-read-duplicate",
+                            "read_file",
+                            new Dictionary<string, string>
+                            {
+                                ["path"] = "ProjectLens.Application/AgentOrchestrator.cs"
+                            })
+                    }),
+                3 => BuildFinalResponseAfterConvergenceGuidance(
+                    request,
+                    "call-read-duplicate",
+                    ConvergenceDecisionType.FinalizePartialAnswer,
+                    "do not continue unnecessary tool calls"),
+                _ => throw new InvalidOperationException("Unexpected model invocation.")
+            };
+        });
+
+        var orchestrator = new AgentOrchestrator(
+            _ => new ITool[] { readTool },
+            CreateDependencies(),
+            modelClient,
+            new AgentOrchestratorOptions { MaxIterations = 4 });
+
+        var response = await orchestrator.ProcessAsync(
+            new AgentRequest("Explain AgentOrchestrator", workspace.RootPath));
+
+        TestAssert.True(response.Success, "The orchestrator should recover from no-progress duplicate guidance.");
+        TestAssert.Equal(1, readTool.ExecutionCount);
+    }
+
+    public static async Task AgentOrchestratorInjectsConfidentFinalizationGuidanceForStrongEvidenceAsync()
+    {
+        using var workspace = new TestWorkspace();
+        var readTool = new CountingTool(
+            "read_file",
+            "Reads files.",
+            new Dictionary<string, string> { ["path"] = "File path." },
+            arguments => new ToolExecutionResult(
+                "read_file",
+                true,
+                $$"""{"Path":"{{arguments["path"]}}","Content":"public sealed class {{Path.GetFileNameWithoutExtension(arguments["path"])}} {}","IsTruncated":false,"CharacterCount":42}"""));
+        var callCount = 0;
+        var modelClient = new ScriptedModelClient(request =>
+        {
+            callCount++;
+            return callCount switch
+            {
+                1 => new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-read-first",
+                            "read_file",
+                            new Dictionary<string, string>
+                            {
+                                ["path"] = "ProjectLens.Application/AgentOrchestrator.cs"
+                            }),
+                        new ModelToolCall(
+                            "call-read-second",
+                            "read_file",
+                            new Dictionary<string, string>
+                            {
+                                ["path"] = "ProjectLens.Application/DefaultRecoveryPolicy.cs"
+                            })
+                    }),
+                2 => BuildFinalResponseAfterConvergenceGuidance(
+                    request,
+                    "call-read-second",
+                    ConvergenceDecisionType.FinalizeConfidentAnswer,
+                    "Generate a final answer now"),
+                _ => throw new InvalidOperationException("Unexpected model invocation.")
+            };
+        });
+
+        var orchestrator = new AgentOrchestrator(
+            _ => new ITool[] { readTool },
+            CreateDependencies(),
+            modelClient,
+            new AgentOrchestratorOptions { MaxIterations = 3 });
+
+        var response = await orchestrator.ProcessAsync(
+            new AgentRequest("Explain the evidence", workspace.RootPath));
+
+        TestAssert.True(response.Success, "The orchestrator should provide confident-finalization guidance.");
+        TestAssert.Equal(2, readTool.ExecutionCount);
     }
 
     public static async Task InMemoryAgentSessionStoreSavesAndLoadsStateAsync()
@@ -2877,6 +3122,29 @@ internal static class ToolTests
         return new ModelResponse($"Grounded final answer: {expectedSnippet}", ResponseId: responseId);
     }
 
+    private static ModelResponse BuildFinalResponseAfterConvergenceGuidance(
+        ModelRequest request,
+        string callId,
+        ConvergenceDecisionType expectedDecisionType,
+        string expectedGuidance)
+    {
+        var toolMessage = request.Conversation
+            .OfType<ModelToolResultMessage>()
+            .Single(message => message.CallId == callId);
+
+        TestAssert.Contains("Current Evidence State:", toolMessage.Output);
+        TestAssert.Contains("Convergence Guidance:", toolMessage.Output);
+        TestAssert.Contains($"Preferred Next Action: {expectedDecisionType}", toolMessage.Output);
+        TestAssert.Contains("Avoid: repeating the same tool call", toolMessage.Output);
+        TestAssert.Contains("If previous tool call did not produce new information, change strategy.", toolMessage.Output);
+        TestAssert.Contains("Prefer finalizing a partial answer instead of looping.", toolMessage.Output);
+        TestAssert.Contains(expectedGuidance, toolMessage.Output);
+
+        return new ModelResponse(
+            $"Grounded final answer after {expectedDecisionType}.",
+            ResponseId: $"resp-{expectedDecisionType}");
+    }
+
     private static ModelResponse BuildFinalResponseAfterMultipleTools(ModelRequest request)
     {
         var toolMessages = request.Conversation.OfType<ModelToolResultMessage>().ToArray();
@@ -2902,6 +3170,10 @@ internal static class ToolTests
         TestAssert.Contains("Choose a different action", duplicateMessage.Output);
         TestAssert.Contains("observed facts", duplicateMessage.Output);
         TestAssert.Contains("inferred recommendations", duplicateMessage.Output);
+        TestAssert.Contains("Current Evidence State:", duplicateMessage.Output);
+        TestAssert.Contains("Convergence Guidance:", duplicateMessage.Output);
+        TestAssert.Contains("Avoid: repeating the same tool call", duplicateMessage.Output);
+        TestAssert.Contains("Preferred Next Action:", duplicateMessage.Output);
 
         return new ModelResponse(
             "Grounded final answer: use the existing evidence instead of repeating the same search.",

@@ -10,13 +10,17 @@ public sealed record AgentOrchestrationDependencies
         IInstructionBuilder instructionBuilder,
         ISessionContextService sessionContextService,
         IRecoveryPolicy recoveryPolicy,
-        IToolOutputAdapter toolOutputAdapter)
+        IToolOutputAdapter toolOutputAdapter,
+        IEvidenceEvaluator? evidenceEvaluator = null,
+        IConvergencePolicy? convergencePolicy = null)
     {
         PromptClarifier = promptClarifier ?? throw new ArgumentNullException(nameof(promptClarifier));
         InstructionBuilder = instructionBuilder ?? throw new ArgumentNullException(nameof(instructionBuilder));
         SessionContextService = sessionContextService ?? throw new ArgumentNullException(nameof(sessionContextService));
         RecoveryPolicy = recoveryPolicy ?? throw new ArgumentNullException(nameof(recoveryPolicy));
         ToolOutputAdapter = toolOutputAdapter ?? throw new ArgumentNullException(nameof(toolOutputAdapter));
+        EvidenceEvaluator = evidenceEvaluator ?? new RuleBasedEvidenceEvaluator();
+        ConvergencePolicy = convergencePolicy ?? new RuleBasedConvergencePolicy();
     }
 
     public IPromptClarifier PromptClarifier { get; }
@@ -28,6 +32,10 @@ public sealed record AgentOrchestrationDependencies
     public IRecoveryPolicy RecoveryPolicy { get; }
 
     public IToolOutputAdapter ToolOutputAdapter { get; }
+
+    public IEvidenceEvaluator EvidenceEvaluator { get; }
+
+    public IConvergencePolicy ConvergencePolicy { get; }
 
     public static AgentOrchestrationDependencies CreateDefault(
         IAgentSessionStore? sessionStore = null,
@@ -43,6 +51,8 @@ public sealed record AgentOrchestrationDependencies
             new DefaultInstructionBuilder(),
             new DefaultSessionContextService(sessionStore, sessionSummarizer, evidenceQualityEvaluator),
             recoveryPolicy,
-            new DefaultToolOutputAdapter(fileCompressor, evidenceQualityEvaluator, recoveryPolicy));
+            new DefaultToolOutputAdapter(fileCompressor, evidenceQualityEvaluator, recoveryPolicy),
+            new RuleBasedEvidenceEvaluator(),
+            new RuleBasedConvergencePolicy());
     }
 }

@@ -12,6 +12,8 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
     private const string ReadFileToolName = "read_file";
 
     private readonly IInstructionBuilder _instructionBuilder;
+    private readonly IEvidenceEvaluator _evidenceEvaluator;
+    private readonly IConvergencePolicy _convergencePolicy;
     private readonly IModelClient? _modelClient;
     private readonly AgentOrchestratorOptions _options;
     private readonly IPromptClarifier _promptClarifier;
@@ -49,6 +51,8 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         _sessionContextService = dependencies.SessionContextService;
         _recoveryPolicy = dependencies.RecoveryPolicy;
         _toolOutputAdapter = dependencies.ToolOutputAdapter;
+        _evidenceEvaluator = dependencies.EvidenceEvaluator;
+        _convergencePolicy = dependencies.ConvergencePolicy;
 
         if (_options.MaxIterations < 1)
         {
@@ -102,9 +106,13 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             new ModelTextMessage("user", request.UserPrompt)
         };
         var executedToolCalls = new HashSet<string>(StringComparer.Ordinal);
+        var evidenceItems = new List<EvidenceItem>();
         var recoveryState = RecoveryState.Empty;
         AggregatedEvidenceContext? aggregatedEvidenceContext = null;
         string? previousResponseId = null;
+        var duplicateToolCallCount = 0;
+        var consecutiveNoProgressCount = 0;
+        ConvergenceEvaluation? latestConvergenceEvaluation = null;
 
         for (var iteration = 1; iteration <= _options.MaxIterations; iteration++)
         {
@@ -164,11 +172,21 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
                 var toolCallSignature = CreateToolCallSignature(toolCall);
                 if (!executedToolCalls.Add(toolCallSignature))
                 {
+                    duplicateToolCallCount++;
+                    consecutiveNoProgressCount++;
+                    latestConvergenceEvaluation = EvaluateConvergence(
+                        evidenceItems,
+                        iteration,
+                        duplicateToolCallCount,
+                        consecutiveNoProgressCount,
+                        hadToolFailure: false,
+                        newEvidenceCount: 0);
                     sessionState = await HandleDuplicateToolCallAsync(
                         toolCall,
                         sessionState,
                         conversation,
                         steps,
+                        latestConvergenceEvaluation,
                         cancellationToken);
                     continue;
                 }
@@ -196,7 +214,26 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
                     aggregatedEvidenceContext);
                 aggregatedEvidenceContext = outputResult.AggregatedEvidenceContext;
 
-                conversation.Add(new ModelToolResultMessage(toolCall.CallId, toolCall.ToolName, outputResult.Output));
+                var newEvidenceCount = outputResult.EvidenceItems.Count;
+                evidenceItems.AddRange(outputResult.EvidenceItems);
+                consecutiveNoProgressCount = executionResult.Success && newEvidenceCount > 0
+                    ? 0
+                    : consecutiveNoProgressCount + 1;
+                latestConvergenceEvaluation = EvaluateConvergence(
+                    evidenceItems,
+                    iteration,
+                    duplicateToolCallCount,
+                    consecutiveNoProgressCount,
+                    hadToolFailure: !executionResult.Success,
+                    newEvidenceCount);
+
+                var modelFacingOutput = AppendConvergenceGuidance(
+                    outputResult.Output,
+                    latestConvergenceEvaluation);
+                steps.Add(new AgentExecutionStep(
+                    $"Convergence guidance: {latestConvergenceEvaluation.Decision.DecisionType}."));
+
+                conversation.Add(new ModelToolResultMessage(toolCall.CallId, toolCall.ToolName, modelFacingOutput));
                 sessionState = await _sessionContextService.UpdateAsync(
                     sessionState,
                     toolCall.ToolName,
@@ -279,9 +316,13 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         AgentSessionState? sessionState,
         ICollection<ModelConversationItem> conversation,
         ICollection<AgentExecutionStep> steps,
+        ConvergenceEvaluation? convergenceEvaluation,
         CancellationToken cancellationToken)
     {
         var duplicateToolCallMessage = _recoveryPolicy.BuildDuplicateToolCallMessage(toolCall, sessionState);
+        var modelFacingMessage = AppendConvergenceGuidance(
+            duplicateToolCallMessage,
+            convergenceEvaluation);
 
         steps.Add(new AgentExecutionStep(
             $"Prevented duplicate tool call '{toolCall.ToolName}' with the same arguments.",
@@ -290,7 +331,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         conversation.Add(new ModelToolResultMessage(
             toolCall.CallId,
             toolCall.ToolName,
-            duplicateToolCallMessage));
+            modelFacingMessage));
 
         return await _sessionContextService.UpdateAsync(
             sessionState,
@@ -298,6 +339,105 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             duplicateToolCallMessage,
             null,
             cancellationToken);
+    }
+
+    private ConvergenceEvaluation EvaluateConvergence(
+        IReadOnlyCollection<EvidenceItem> evidenceItems,
+        int iteration,
+        int duplicateToolCallCount,
+        int consecutiveNoProgressCount,
+        bool hadToolFailure,
+        int newEvidenceCount)
+    {
+        var assessment = _evidenceEvaluator.Assess(evidenceItems);
+        var decision = _convergencePolicy.Evaluate(
+            assessment,
+            evidenceItems,
+            new ConvergenceContext(
+                iteration,
+                duplicateToolCallCount,
+                consecutiveNoProgressCount,
+                hadToolFailure,
+                newEvidenceCount));
+        return new ConvergenceEvaluation(assessment, decision);
+    }
+
+    private static string AppendConvergenceGuidance(
+        string output,
+        ConvergenceEvaluation? convergenceEvaluation)
+    {
+        if (convergenceEvaluation is null)
+        {
+            return output;
+        }
+
+        var builder = new StringBuilder(output.TrimEnd());
+        if (builder.Length > 0)
+        {
+            builder.AppendLine();
+            builder.AppendLine();
+        }
+
+        builder.Append(BuildConvergenceGuidance(convergenceEvaluation));
+        return builder.ToString();
+    }
+
+    private static string BuildConvergenceGuidance(ConvergenceEvaluation convergenceEvaluation)
+    {
+        var assessment = convergenceEvaluation.Assessment;
+        var decision = convergenceEvaluation.Decision;
+        var builder = new StringBuilder();
+        builder.AppendLine("Current Evidence State:");
+        builder.AppendLine($"- Sufficiency: {(assessment.IsSufficient ? "sufficient" : "insufficient")}");
+        builder.AppendLine($"- Coverage: {DescribeScore(assessment.CoverageScore)} ({assessment.CoverageScore:F2})");
+        builder.AppendLine($"- Confidence: {DescribeScore(assessment.ConfidenceScore)} ({assessment.ConfidenceScore:F2})");
+        builder.AppendLine($"- Reason: {assessment.Reason}");
+        builder.AppendLine();
+        builder.AppendLine("Convergence Guidance:");
+        builder.AppendLine($"- Preferred Next Action: {decision.DecisionType}");
+        builder.AppendLine("- Avoid: repeating the same tool call");
+        builder.AppendLine("- If previous tool call did not produce new information, change strategy.");
+        builder.AppendLine("- Prefer finalizing a partial answer instead of looping.");
+
+        var actionGuidance = MapDecisionToGuidance(decision);
+        if (!string.IsNullOrWhiteSpace(actionGuidance))
+        {
+            builder.AppendLine($"- Guidance: {actionGuidance}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(decision.Guidance))
+        {
+            builder.AppendLine($"- Policy Note: {decision.Guidance}");
+        }
+
+        return builder.ToString().TrimEnd();
+    }
+
+    private static string DescribeScore(double score)
+    {
+        return score switch
+        {
+            >= 0.75 => "high",
+            >= 0.5 => "moderate",
+            > 0 => "limited",
+            _ => "none"
+        };
+    }
+
+    private static string MapDecisionToGuidance(ConvergenceDecision decision)
+    {
+        return decision.DecisionType switch
+        {
+            ConvergenceDecisionType.ContinueWithBroaderSearch =>
+                "Explore different files or broader related search terms before finalizing.",
+            ConvergenceDecisionType.ContinueWithDeeperRead =>
+                "Read the most relevant candidate file in more depth before making file-level claims.",
+            ConvergenceDecisionType.FinalizePartialAnswer =>
+                "Answer with explicit limitations; do not continue unnecessary tool calls.",
+            ConvergenceDecisionType.FinalizeConfidentAnswer =>
+                "Generate a final answer now and ground it in the observed evidence.",
+            _ => decision.Guidance ?? string.Empty
+        };
     }
 
     private async Task<AgentResponse> ProcessRuleBasedAsync(
@@ -663,4 +803,8 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
         IReadOnlyDictionary<string, ITool> Tools,
         IReadOnlyCollection<ToolDefinition> RegisteredTools,
         AgentSessionState? SessionState);
+
+    private sealed record ConvergenceEvaluation(
+        EvidenceAssessment Assessment,
+        ConvergenceDecision Decision);
 }
