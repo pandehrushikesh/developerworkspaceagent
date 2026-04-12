@@ -51,6 +51,12 @@ internal static class Program
             ("Convergence policy deepens mostly partial evidence", ToolTests.ConvergencePolicyDeepensMostlyPartialEvidenceAsync),
             ("Convergence policy finalizes partial answer under progress pressure", ToolTests.ConvergencePolicyFinalizesPartialAnswerUnderProgressPressureAsync),
             ("Convergence policy handles mixed moderate evidence deterministically", ToolTests.ConvergencePolicyHandlesMixedModerateEvidenceDeterministicallyAsync),
+            ("AgentOrchestrator injects deeper-read guidance for search-only evidence", ToolTests.AgentOrchestratorInjectsDeeperReadGuidanceForSearchOnlyEvidenceAsync),
+            ("AgentOrchestrator injects broader-search guidance for narrow evidence", ToolTests.AgentOrchestratorInjectsBroaderSearchGuidanceForNarrowEvidenceAsync),
+            ("AgentOrchestrator injects partial-finalization guidance after no progress", ToolTests.AgentOrchestratorInjectsPartialFinalizationGuidanceAfterNoProgressAsync),
+            ("AgentOrchestrator injects confident-finalization guidance for strong evidence", ToolTests.AgentOrchestratorInjectsConfidentFinalizationGuidanceForStrongEvidenceAsync),
+            ("AgentOrchestrator limits read over-fetching per iteration", ToolTests.AgentOrchestratorLimitsReadOverFetchingPerIterationAsync),
+            ("AgentOrchestrator lets partial convergence bypass multi-file recovery", ToolTests.AgentOrchestratorLetsPartialConvergenceBypassMultiFileRecoveryAsync),
             ("InMemoryAgentSessionStore saves and loads state", ToolTests.InMemoryAgentSessionStoreSavesAndLoadsStateAsync),
             ("FileBasedAgentSessionStore saves and reloads state across instances", ToolTests.FileBasedAgentSessionStoreSavesAndReloadsStateAcrossInstancesAsync),
             ("FileBasedAgentSessionStore returns null for missing sessions", ToolTests.FileBasedAgentSessionStoreReturnsNullForMissingSessionAsync),
@@ -1139,6 +1145,402 @@ internal static class ToolTests
             evidenceEvaluator.Assess(evidenceItems),
             evidenceItems,
             context ?? new ConvergenceContext());
+    }
+
+    public static async Task AgentOrchestratorInjectsDeeperReadGuidanceForSearchOnlyEvidenceAsync()
+    {
+        using var workspace = new TestWorkspace();
+        var searchTool = new CountingTool(
+            "search_files",
+            "Searches files.",
+            new Dictionary<string, string>
+            {
+                ["query"] = "Query text.",
+                ["path"] = "Search path."
+            },
+            _ => new ToolExecutionResult(
+                "search_files",
+                true,
+                """
+                {
+                  "Query": "AgentOrchestrator",
+                  "TotalMatches": 1,
+                  "Matches": [
+                    {
+                      "Path": "ProjectLens.Application/AgentOrchestrator.cs",
+                      "LineNumber": 1,
+                      "Snippet": "public sealed class AgentOrchestrator",
+                      "MatchKind": "keyword"
+                    }
+                  ],
+                  "RetrievalMode": "keyword",
+                  "RequestedStrategy": "keyword",
+                  "EffectiveStrategy": "keyword",
+                  "KeywordMatchCount": 1,
+                  "SemanticMatchCount": 0
+                }
+                """));
+        var callCount = 0;
+        var modelClient = new ScriptedModelClient(request =>
+        {
+            callCount++;
+            return callCount switch
+            {
+                1 => new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-search-guidance",
+                            "search_files",
+                            new Dictionary<string, string>
+                            {
+                                ["query"] = "AgentOrchestrator",
+                                ["path"] = "."
+                            })
+                    }),
+                2 => BuildFinalResponseAfterConvergenceGuidance(
+                    request,
+                    "call-search-guidance",
+                    ConvergenceDecisionType.ContinueWithDeeperRead,
+                    "Read the most relevant candidate file"),
+                _ => throw new InvalidOperationException("Unexpected model invocation.")
+            };
+        });
+
+        var orchestrator = new AgentOrchestrator(
+            _ => new ITool[] { searchTool },
+            CreateDependencies(),
+            modelClient,
+            new AgentOrchestratorOptions { MaxIterations = 3 });
+
+        var response = await orchestrator.ProcessAsync(
+            new AgentRequest("Find AgentOrchestrator", workspace.RootPath));
+
+        TestAssert.True(response.Success, "The orchestrator should continue with guidance after search evidence.");
+        TestAssert.Equal(1, searchTool.ExecutionCount);
+    }
+
+    public static async Task AgentOrchestratorInjectsBroaderSearchGuidanceForNarrowEvidenceAsync()
+    {
+        using var workspace = new TestWorkspace();
+        var readTool = new CountingTool(
+            "read_file",
+            "Reads files.",
+            new Dictionary<string, string> { ["path"] = "File path." },
+            _ => new ToolExecutionResult(
+                "read_file",
+                true,
+                """{"Path":"ProjectLens.Application/AgentOrchestrator.cs","Content":"public sealed class AgentOrchestrator {}","IsTruncated":false,"CharacterCount":42}"""));
+        var callCount = 0;
+        var modelClient = new ScriptedModelClient(request =>
+        {
+            callCount++;
+            return callCount switch
+            {
+                1 => new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-read-narrow",
+                            "read_file",
+                            new Dictionary<string, string>
+                            {
+                                ["path"] = "ProjectLens.Application/AgentOrchestrator.cs"
+                            })
+                    }),
+                2 => BuildFinalResponseAfterConvergenceGuidance(
+                    request,
+                    "call-read-narrow",
+                    ConvergenceDecisionType.ContinueWithBroaderSearch,
+                    "Explore different files"),
+                _ => throw new InvalidOperationException("Unexpected model invocation.")
+            };
+        });
+
+        var orchestrator = new AgentOrchestrator(
+            _ => new ITool[] { readTool },
+            CreateDependencies(),
+            modelClient,
+            new AgentOrchestratorOptions { MaxIterations = 3 });
+
+        var response = await orchestrator.ProcessAsync(
+            new AgentRequest("Explain AgentOrchestrator", workspace.RootPath));
+
+        TestAssert.True(response.Success, "The orchestrator should continue with broader-search guidance.");
+        TestAssert.Equal(1, readTool.ExecutionCount);
+    }
+
+    public static async Task AgentOrchestratorInjectsPartialFinalizationGuidanceAfterNoProgressAsync()
+    {
+        using var workspace = new TestWorkspace();
+        var readTool = new CountingTool(
+            "read_file",
+            "Reads files.",
+            new Dictionary<string, string> { ["path"] = "File path." },
+            _ => new ToolExecutionResult(
+                "read_file",
+                true,
+                """{"Path":"ProjectLens.Application/AgentOrchestrator.cs","Content":"public sealed class AgentOrchestrator {}","IsTruncated":false,"CharacterCount":42}"""));
+        var callCount = 0;
+        var modelClient = new ScriptedModelClient(request =>
+        {
+            callCount++;
+            return callCount switch
+            {
+                1 => new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-read-progress",
+                            "read_file",
+                            new Dictionary<string, string>
+                            {
+                                ["path"] = "ProjectLens.Application/AgentOrchestrator.cs"
+                            })
+                    }),
+                2 => new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-read-duplicate",
+                            "read_file",
+                            new Dictionary<string, string>
+                            {
+                                ["path"] = "ProjectLens.Application/AgentOrchestrator.cs"
+                            })
+                    }),
+                3 => BuildFinalResponseAfterConvergenceGuidance(
+                    request,
+                    "call-read-duplicate",
+                    ConvergenceDecisionType.FinalizePartialAnswer,
+                    "do not continue unnecessary tool calls"),
+                _ => throw new InvalidOperationException("Unexpected model invocation.")
+            };
+        });
+
+        var orchestrator = new AgentOrchestrator(
+            _ => new ITool[] { readTool },
+            CreateDependencies(),
+            modelClient,
+            new AgentOrchestratorOptions { MaxIterations = 4 });
+
+        var response = await orchestrator.ProcessAsync(
+            new AgentRequest("Explain AgentOrchestrator", workspace.RootPath));
+
+        TestAssert.True(response.Success, "The orchestrator should recover from no-progress duplicate guidance.");
+        TestAssert.Equal(1, readTool.ExecutionCount);
+    }
+
+    public static async Task AgentOrchestratorInjectsConfidentFinalizationGuidanceForStrongEvidenceAsync()
+    {
+        using var workspace = new TestWorkspace();
+        var readTool = new CountingTool(
+            "read_file",
+            "Reads files.",
+            new Dictionary<string, string> { ["path"] = "File path." },
+            arguments => new ToolExecutionResult(
+                "read_file",
+                true,
+                $$"""{"Path":"{{arguments["path"]}}","Content":"public sealed class {{Path.GetFileNameWithoutExtension(arguments["path"])}} {}","IsTruncated":false,"CharacterCount":42}"""));
+        var callCount = 0;
+        var modelClient = new ScriptedModelClient(request =>
+        {
+            callCount++;
+            return callCount switch
+            {
+                1 => new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-read-first",
+                            "read_file",
+                            new Dictionary<string, string>
+                            {
+                                ["path"] = "ProjectLens.Application/AgentOrchestrator.cs"
+                            }),
+                        new ModelToolCall(
+                            "call-read-second",
+                            "read_file",
+                            new Dictionary<string, string>
+                            {
+                                ["path"] = "ProjectLens.Application/DefaultRecoveryPolicy.cs"
+                            })
+                    }),
+                2 => BuildFinalResponseAfterConvergenceGuidance(
+                    request,
+                    "call-read-second",
+                    ConvergenceDecisionType.FinalizeConfidentAnswer,
+                    "Generate a final answer now"),
+                _ => throw new InvalidOperationException("Unexpected model invocation.")
+            };
+        });
+
+        var orchestrator = new AgentOrchestrator(
+            _ => new ITool[] { readTool },
+            CreateDependencies(),
+            modelClient,
+            new AgentOrchestratorOptions { MaxIterations = 3 });
+
+        var response = await orchestrator.ProcessAsync(
+            new AgentRequest("Explain the evidence", workspace.RootPath));
+
+        TestAssert.True(response.Success, "The orchestrator should provide confident-finalization guidance.");
+        TestAssert.Equal(2, readTool.ExecutionCount);
+    }
+
+    public static async Task AgentOrchestratorLimitsReadOverFetchingPerIterationAsync()
+    {
+        using var workspace = new TestWorkspace();
+        var readTool = new CountingTool(
+            "read_file",
+            "Reads files.",
+            new Dictionary<string, string> { ["path"] = "File path." },
+            arguments => new ToolExecutionResult(
+                "read_file",
+                true,
+                $$"""{"Path":"{{arguments["path"]}}","Content":"public sealed class {{Path.GetFileNameWithoutExtension(arguments["path"])}} {}","IsTruncated":false,"CharacterCount":42}"""));
+        var callCount = 0;
+        var modelClient = new ScriptedModelClient(request =>
+        {
+            callCount++;
+            return callCount switch
+            {
+                1 => new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-read-a",
+                            "read_file",
+                            new Dictionary<string, string> { ["path"] = "A.cs" }),
+                        new ModelToolCall(
+                            "call-read-b",
+                            "read_file",
+                            new Dictionary<string, string> { ["path"] = "B.cs" }),
+                        new ModelToolCall(
+                            "call-read-c",
+                            "read_file",
+                            new Dictionary<string, string> { ["path"] = "C.cs" })
+                    }),
+                2 => BuildFinalResponseAfterFetchBudgetGuidance(request, "call-read-c"),
+                _ => throw new InvalidOperationException("Unexpected model invocation.")
+            };
+        });
+
+        var orchestrator = new AgentOrchestrator(
+            _ => new ITool[] { readTool },
+            CreateDependencies(),
+            modelClient,
+            new AgentOrchestratorOptions { MaxIterations = 3 });
+
+        var response = await orchestrator.ProcessAsync(
+            new AgentRequest("Read too many files", workspace.RootPath));
+
+        TestAssert.True(response.Success, "The orchestrator should guide rather than over-fetch.");
+        TestAssert.Equal(2, readTool.ExecutionCount);
+        TestAssert.Equal(2, response.ToolResults?.Count ?? 0);
+        TestAssert.True(
+            response.ExecutionSteps?.Any(step =>
+                step.Description.Contains("fetch budget", StringComparison.OrdinalIgnoreCase)) == true,
+            "The orchestrator should record the skipped over-budget call.");
+    }
+
+    public static async Task AgentOrchestratorLetsPartialConvergenceBypassMultiFileRecoveryAsync()
+    {
+        using var workspace = new TestWorkspace();
+        var searchTool = new CountingTool(
+            "search_files",
+            "Searches files.",
+            new Dictionary<string, string>
+            {
+                ["query"] = "Query text.",
+                ["path"] = "Search path."
+            },
+            _ => new ToolExecutionResult(
+                "search_files",
+                true,
+                """
+                {
+                  "Query": "blog create",
+                  "TotalMatches": 2,
+                  "Matches": [
+                    {
+                      "Path": "src/BlogController.cs",
+                      "LineNumber": 1,
+                      "Snippet": "public Task CreateBlog(CreateBlogRequest request)",
+                      "MatchKind": "keyword"
+                    },
+                    {
+                      "Path": "src/PostService.cs",
+                      "LineNumber": 1,
+                      "Snippet": "public Task SavePost(Post post)",
+                      "MatchKind": "keyword"
+                    }
+                  ],
+                  "RetrievalMode": "keyword",
+                  "RequestedStrategy": "keyword",
+                  "EffectiveStrategy": "keyword",
+                  "KeywordMatchCount": 2,
+                  "SemanticMatchCount": 0
+                }
+                """));
+        var callCount = 0;
+        var modelClient = new ScriptedModelClient(request =>
+        {
+            callCount++;
+            return callCount switch
+            {
+                1 => new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-search-blog",
+                            "search_files",
+                            new Dictionary<string, string>
+                            {
+                                ["query"] = "blog create",
+                                ["path"] = "."
+                            })
+                    }),
+                2 => new ModelResponse(
+                    ToolCalls: new[]
+                    {
+                        new ModelToolCall(
+                            "call-search-blog-duplicate",
+                            "search_files",
+                            new Dictionary<string, string>
+                            {
+                                ["query"] = "blog create",
+                                ["path"] = "."
+                            })
+                    }),
+                3 => new ModelResponse(
+                    """
+                    Observed facts:
+                    - Search evidence suggests BlogController and PostService are likely involved.
+
+                    Limitations:
+                    - This is a partial answer because the candidate files were not read directly.
+                    """),
+                _ => throw new InvalidOperationException("Unexpected model invocation.")
+            };
+        });
+
+        var orchestrator = new AgentOrchestrator(
+            _ => new ITool[] { searchTool },
+            CreateDependencies(),
+            modelClient,
+            new AgentOrchestratorOptions { MaxIterations = 4 });
+
+        var response = await orchestrator.ProcessAsync(
+            new AgentRequest("Trace how blog creation works across the codebase", workspace.RootPath));
+
+        TestAssert.True(response.Success, "Convergence partial finalization should bypass multi-file recovery.");
+        TestAssert.Contains("partial answer", response.Output);
+        TestAssert.Equal(1, searchTool.ExecutionCount);
+        TestAssert.False(
+            response.ExecutionSteps?.Any(step =>
+                step.Description.Contains("requesting one more supporting file", StringComparison.OrdinalIgnoreCase)) == true,
+            "Multi-file recovery should not override FinalizePartialAnswer convergence.");
     }
 
     public static async Task InMemoryAgentSessionStoreSavesAndLoadsStateAsync()
@@ -2877,6 +3279,50 @@ internal static class ToolTests
         return new ModelResponse($"Grounded final answer: {expectedSnippet}", ResponseId: responseId);
     }
 
+    private static ModelResponse BuildFinalResponseAfterConvergenceGuidance(
+        ModelRequest request,
+        string callId,
+        ConvergenceDecisionType expectedDecisionType,
+        string expectedGuidance)
+    {
+        var toolMessage = request.Conversation
+            .OfType<ModelToolResultMessage>()
+            .Single(message => message.CallId == callId);
+
+        TestAssert.Contains("Current Evidence State:", toolMessage.Output);
+        TestAssert.Contains("Convergence Guidance:", toolMessage.Output);
+        TestAssert.Contains($"Preferred Next Action: {expectedDecisionType}", toolMessage.Output);
+        TestAssert.Contains("Avoid: repeating the same tool call", toolMessage.Output);
+        TestAssert.Contains("If previous tool call did not produce new information, change strategy.", toolMessage.Output);
+        TestAssert.Contains("Prefer finalizing a partial answer instead of looping.", toolMessage.Output);
+        TestAssert.Contains(expectedGuidance, toolMessage.Output);
+
+        return new ModelResponse(
+            $"Grounded final answer after {expectedDecisionType}.",
+            ResponseId: $"resp-{expectedDecisionType}");
+    }
+
+    private static ModelResponse BuildFinalResponseAfterFetchBudgetGuidance(
+        ModelRequest request,
+        string callId)
+    {
+        var toolMessage = request.Conversation
+            .OfType<ModelToolResultMessage>()
+            .Single(message => message.CallId == callId);
+
+        TestAssert.Contains("Fetch budget reached for this iteration.", toolMessage.Output);
+        TestAssert.Contains("Avoid reading too many files. Focus on the most relevant sources.", toolMessage.Output);
+        TestAssert.Contains("The skipped tool call was not executed.", toolMessage.Output);
+        TestAssert.Contains("Current Evidence State:", toolMessage.Output);
+        TestAssert.Contains("Convergence Guidance:", toolMessage.Output);
+        TestAssert.Contains("Preferred Next Action: FinalizeConfidentAnswer", toolMessage.Output);
+        TestAssert.Contains("Generate a final answer now", toolMessage.Output);
+
+        return new ModelResponse(
+            "Grounded final answer after fetch budget guidance.",
+            ResponseId: "resp-fetch-budget");
+    }
+
     private static ModelResponse BuildFinalResponseAfterMultipleTools(ModelRequest request)
     {
         var toolMessages = request.Conversation.OfType<ModelToolResultMessage>().ToArray();
@@ -2902,6 +3348,10 @@ internal static class ToolTests
         TestAssert.Contains("Choose a different action", duplicateMessage.Output);
         TestAssert.Contains("observed facts", duplicateMessage.Output);
         TestAssert.Contains("inferred recommendations", duplicateMessage.Output);
+        TestAssert.Contains("Current Evidence State:", duplicateMessage.Output);
+        TestAssert.Contains("Convergence Guidance:", duplicateMessage.Output);
+        TestAssert.Contains("Avoid: repeating the same tool call", duplicateMessage.Output);
+        TestAssert.Contains("Preferred Next Action:", duplicateMessage.Output);
 
         return new ModelResponse(
             "Grounded final answer: use the existing evidence instead of repeating the same search.",
