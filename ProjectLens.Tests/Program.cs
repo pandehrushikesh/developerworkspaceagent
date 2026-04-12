@@ -40,6 +40,11 @@ internal static class Program
             ("SearchFilesTool prefers feature-related files over generic setup for feature tracing", ToolTests.SearchFilesToolPrefersFeatureFilesOverGenericSetupAsync),
             ("ToolOutputAdapter returns search prompt text and evidence", ToolTests.ToolOutputAdapterReturnsSearchPromptTextAndEvidenceAsync),
             ("ToolOutputAdapter returns read file evidence", ToolTests.ToolOutputAdapterReturnsReadFileEvidenceAsync),
+            ("Evidence evaluator rates search hits as insufficient", ToolTests.EvidenceEvaluatorRatesSearchHitsAsInsufficientAsync),
+            ("Evidence evaluator rates one direct snippet as limited", ToolTests.EvidenceEvaluatorRatesOneDirectSnippetAsLimitedAsync),
+            ("Evidence evaluator rates multiple direct snippets as sufficient", ToolTests.EvidenceEvaluatorRatesMultipleDirectSnippetsAsSufficientAsync),
+            ("Evidence evaluator reduces confidence for partial summaries", ToolTests.EvidenceEvaluatorReducesConfidenceForPartialSummariesAsync),
+            ("Evidence evaluator explains mixed evidence without fabricated gaps", ToolTests.EvidenceEvaluatorExplainsMixedEvidenceWithoutFabricatedGapsAsync),
             ("InMemoryAgentSessionStore saves and loads state", ToolTests.InMemoryAgentSessionStoreSavesAndLoadsStateAsync),
             ("FileBasedAgentSessionStore saves and reloads state across instances", ToolTests.FileBasedAgentSessionStoreSavesAndReloadsStateAcrossInstancesAsync),
             ("FileBasedAgentSessionStore returns null for missing sessions", ToolTests.FileBasedAgentSessionStoreReturnsNullForMissingSessionAsync),
@@ -794,6 +799,165 @@ internal static class ToolTests
         TestAssert.Equal(EvidenceKind.DirectSnippet, evidence.Kind);
         TestAssert.False(evidence.IsPartial, "The read evidence should not be partial when the file output is not truncated or compressed.");
         TestAssert.Contains("ProjectLens reads repositories through bounded tools.", evidence.Content);
+        return Task.CompletedTask;
+    }
+
+    public static Task EvidenceEvaluatorRatesSearchHitsAsInsufficientAsync()
+    {
+        IEvidenceEvaluator evaluator = new RuleBasedEvidenceEvaluator();
+
+        var assessment = evaluator.Assess(
+        [
+            new EvidenceItem(
+                "search_files",
+                "README.md",
+                "ProjectLens reads repositories through bounded tools.",
+                EvidenceKind.SearchHit,
+                true,
+                1.0)
+        ]);
+
+        TestAssert.False(assessment.IsSufficient, "Search hits alone should not be sufficient evidence.");
+        TestAssert.True(assessment.CoverageScore < 0.6, "Search-only evidence should have limited coverage.");
+        TestAssert.True(assessment.ConfidenceScore < 0.6, "Search-only evidence should have limited confidence.");
+        TestAssert.Contains("only search hits", assessment.Reason);
+        TestAssert.True(
+            assessment.MissingAreas.Any(area => area.Contains("No direct file evidence", StringComparison.Ordinal)),
+            "The evaluator should explain that direct file evidence is missing.");
+        return Task.CompletedTask;
+    }
+
+    public static Task EvidenceEvaluatorRatesOneDirectSnippetAsLimitedAsync()
+    {
+        IEvidenceEvaluator evaluator = new RuleBasedEvidenceEvaluator();
+        var searchOnlyAssessment = evaluator.Assess(
+        [
+            new EvidenceItem("search_files", "README.md", "ProjectLens", EvidenceKind.SearchHit, true, 1.0)
+        ]);
+
+        var assessment = evaluator.Assess(
+        [
+            new EvidenceItem(
+                "read_file",
+                "ProjectLens.Application/AgentOrchestrator.cs",
+                "public sealed class AgentOrchestrator",
+                EvidenceKind.DirectSnippet,
+                false,
+                1.0)
+        ]);
+
+        TestAssert.False(assessment.IsSufficient, "One direct snippet should remain limited coverage.");
+        TestAssert.True(
+            assessment.CoverageScore > searchOnlyAssessment.CoverageScore,
+            "Direct file evidence should improve coverage compared with search hits only.");
+        TestAssert.True(assessment.ConfidenceScore > 0.7, "A complete direct snippet should carry strong confidence.");
+        TestAssert.True(
+            assessment.MissingAreas.Any(area => area.Contains("fewer than two distinct sources", StringComparison.Ordinal)),
+            "The evaluator should call out single-source coverage.");
+        return Task.CompletedTask;
+    }
+
+    public static Task EvidenceEvaluatorRatesMultipleDirectSnippetsAsSufficientAsync()
+    {
+        IEvidenceEvaluator evaluator = new RuleBasedEvidenceEvaluator();
+
+        var assessment = evaluator.Assess(
+        [
+            new EvidenceItem(
+                "read_file",
+                "ProjectLens.Application/AgentOrchestrator.cs",
+                "await _modelClient.GetResponseAsync(request, cancellationToken)",
+                EvidenceKind.DirectSnippet,
+                false,
+                1.0),
+            new EvidenceItem(
+                "read_file",
+                "ProjectLens.Application/DefaultRecoveryPolicy.cs",
+                "return new FinalAnswerDecision(true, finalAnswer);",
+                EvidenceKind.DirectSnippet,
+                false,
+                1.0)
+        ]);
+
+        TestAssert.True(assessment.IsSufficient, "Multiple complete direct snippets across files should be sufficient.");
+        TestAssert.True(assessment.CoverageScore >= 0.65, "Multi-source direct evidence should have strong coverage.");
+        TestAssert.True(assessment.ConfidenceScore >= 0.65, "Complete direct evidence should have strong confidence.");
+        TestAssert.Contains("Sufficient", assessment.Reason);
+        return Task.CompletedTask;
+    }
+
+    public static Task EvidenceEvaluatorReducesConfidenceForPartialSummariesAsync()
+    {
+        IEvidenceEvaluator evaluator = new RuleBasedEvidenceEvaluator();
+
+        var assessment = evaluator.Assess(
+        [
+            new EvidenceItem(
+                "read_file",
+                "ProjectLens.Application/AgentOrchestrator.cs",
+                "Summary of orchestrator flow.",
+                EvidenceKind.FileSummary,
+                true,
+                0.75),
+            new EvidenceItem(
+                "read_file",
+                "ProjectLens.Application/DefaultToolOutputAdapter.cs",
+                "Summary of tool output adaptation.",
+                EvidenceKind.FileSummary,
+                true,
+                0.75)
+        ]);
+
+        TestAssert.False(assessment.IsSufficient, "Partial summaries should not be sufficient without direct file evidence.");
+        TestAssert.True(assessment.ConfidenceScore < 0.6, "Partial summary evidence should reduce confidence.");
+        TestAssert.True(
+            assessment.MissingAreas.Any(area => area.Contains("partial", StringComparison.Ordinal)),
+            "The evaluator should call out mostly partial evidence.");
+        TestAssert.Contains("partial", assessment.Reason);
+        return Task.CompletedTask;
+    }
+
+    public static Task EvidenceEvaluatorExplainsMixedEvidenceWithoutFabricatedGapsAsync()
+    {
+        IEvidenceEvaluator evaluator = new RuleBasedEvidenceEvaluator();
+
+        var assessment = evaluator.Assess(
+        [
+            new EvidenceItem(
+                "read_file",
+                "ProjectLens.Application/AgentOrchestrator.cs",
+                "public async Task<AgentResponse> RunAsync",
+                EvidenceKind.DirectSnippet,
+                false,
+                1.0),
+            new EvidenceItem(
+                "search_files",
+                "ProjectLens.Application/DefaultRecoveryPolicy.cs",
+                "BuildMultiFileAggregationPrompt",
+                EvidenceKind.SearchHit,
+                true,
+                1.0),
+            new EvidenceItem(
+                "list_files",
+                ".",
+                "ProjectLens.Application",
+                EvidenceKind.ToolObservation,
+                false,
+                0.7)
+        ]);
+
+        var knownMissingAreas = new[]
+        {
+            "No direct file evidence was read.",
+            "Evidence covers fewer than two distinct sources.",
+            "Most evidence is partial, truncated, or summary-level.",
+            "Evidence is limited to search hits and should be confirmed with read_file."
+        };
+
+        TestAssert.False(string.IsNullOrWhiteSpace(assessment.Reason), "Mixed evidence should produce an explanation.");
+        TestAssert.True(
+            assessment.MissingAreas.All(area => knownMissingAreas.Contains(area, StringComparer.Ordinal)),
+            "The evaluator should only report deterministic gaps from the current evidence model.");
         return Task.CompletedTask;
     }
 
