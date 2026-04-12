@@ -45,6 +45,12 @@ internal static class Program
             ("Evidence evaluator rates multiple direct snippets as sufficient", ToolTests.EvidenceEvaluatorRatesMultipleDirectSnippetsAsSufficientAsync),
             ("Evidence evaluator reduces confidence for partial summaries", ToolTests.EvidenceEvaluatorReducesConfidenceForPartialSummariesAsync),
             ("Evidence evaluator explains mixed evidence without fabricated gaps", ToolTests.EvidenceEvaluatorExplainsMixedEvidenceWithoutFabricatedGapsAsync),
+            ("Convergence policy deepens search-hit-only evidence", ToolTests.ConvergencePolicyDeepensSearchHitOnlyEvidenceAsync),
+            ("Convergence policy broadens single-source direct evidence", ToolTests.ConvergencePolicyBroadensSingleSourceDirectEvidenceAsync),
+            ("Convergence policy finalizes sufficient evidence confidently", ToolTests.ConvergencePolicyFinalizesSufficientEvidenceConfidentlyAsync),
+            ("Convergence policy deepens mostly partial evidence", ToolTests.ConvergencePolicyDeepensMostlyPartialEvidenceAsync),
+            ("Convergence policy finalizes partial answer under progress pressure", ToolTests.ConvergencePolicyFinalizesPartialAnswerUnderProgressPressureAsync),
+            ("Convergence policy handles mixed moderate evidence deterministically", ToolTests.ConvergencePolicyHandlesMixedModerateEvidenceDeterministicallyAsync),
             ("InMemoryAgentSessionStore saves and loads state", ToolTests.InMemoryAgentSessionStoreSavesAndLoadsStateAsync),
             ("FileBasedAgentSessionStore saves and reloads state across instances", ToolTests.FileBasedAgentSessionStoreSavesAndReloadsStateAcrossInstancesAsync),
             ("FileBasedAgentSessionStore returns null for missing sessions", ToolTests.FileBasedAgentSessionStoreReturnsNullForMissingSessionAsync),
@@ -959,6 +965,180 @@ internal static class ToolTests
             assessment.MissingAreas.All(area => knownMissingAreas.Contains(area, StringComparer.Ordinal)),
             "The evaluator should only report deterministic gaps from the current evidence model.");
         return Task.CompletedTask;
+    }
+
+    public static Task ConvergencePolicyDeepensSearchHitOnlyEvidenceAsync()
+    {
+        var evidenceItems = new[]
+        {
+            new EvidenceItem(
+                "search_files",
+                "ProjectLens.Application/AgentOrchestrator.cs",
+                "public sealed class AgentOrchestrator",
+                EvidenceKind.SearchHit,
+                true,
+                1.0)
+        };
+        var decision = EvaluateConvergence(evidenceItems);
+
+        TestAssert.Equal(ConvergenceDecisionType.ContinueWithDeeperRead, decision.DecisionType);
+        TestAssert.Contains("direct file confirmation", decision.Reason);
+        TestAssert.Contains("Read the most relevant source file", decision.Guidance);
+        return Task.CompletedTask;
+    }
+
+    public static Task ConvergencePolicyBroadensSingleSourceDirectEvidenceAsync()
+    {
+        var evidenceItems = new[]
+        {
+            new EvidenceItem(
+                "read_file",
+                "ProjectLens.Application/AgentOrchestrator.cs",
+                "public sealed class AgentOrchestrator",
+                EvidenceKind.DirectSnippet,
+                false,
+                1.0)
+        };
+        var decision = EvaluateConvergence(evidenceItems);
+
+        TestAssert.Equal(ConvergenceDecisionType.ContinueWithBroaderSearch, decision.DecisionType);
+        TestAssert.Contains("concentrated", decision.Reason);
+        TestAssert.Contains("supporting call sites", decision.Guidance);
+        return Task.CompletedTask;
+    }
+
+    public static Task ConvergencePolicyFinalizesSufficientEvidenceConfidentlyAsync()
+    {
+        var evidenceItems = new[]
+        {
+            new EvidenceItem(
+                "read_file",
+                "ProjectLens.Application/AgentOrchestrator.cs",
+                "await _modelClient.GetResponseAsync(request, cancellationToken)",
+                EvidenceKind.DirectSnippet,
+                false,
+                1.0),
+            new EvidenceItem(
+                "read_file",
+                "ProjectLens.Application/DefaultRecoveryPolicy.cs",
+                "return new FinalAnswerDecision(true, finalAnswer);",
+                EvidenceKind.DirectSnippet,
+                false,
+                1.0)
+        };
+        var decision = EvaluateConvergence(evidenceItems);
+
+        TestAssert.Equal(ConvergenceDecisionType.FinalizeConfidentAnswer, decision.DecisionType);
+        TestAssert.Contains("sufficient", decision.Reason);
+        TestAssert.Contains("grounded", decision.Guidance);
+        return Task.CompletedTask;
+    }
+
+    public static Task ConvergencePolicyDeepensMostlyPartialEvidenceAsync()
+    {
+        var evidenceItems = new[]
+        {
+            new EvidenceItem(
+                "read_file",
+                "ProjectLens.Application/AgentOrchestrator.cs",
+                "Summary of orchestrator flow.",
+                EvidenceKind.FileSummary,
+                true,
+                0.75),
+            new EvidenceItem(
+                "read_file",
+                "ProjectLens.Application/DefaultToolOutputAdapter.cs",
+                "Summary of adaptation flow.",
+                EvidenceKind.FileSummary,
+                true,
+                0.75),
+            new EvidenceItem(
+                "read_file",
+                "ProjectLens.Application/DefaultRecoveryPolicy.cs",
+                "Summary of recovery decisions.",
+                EvidenceKind.FileSummary,
+                true,
+                0.75)
+        };
+        var decision = EvaluateConvergence(evidenceItems);
+
+        TestAssert.Equal(ConvergenceDecisionType.ContinueWithDeeperRead, decision.DecisionType);
+        TestAssert.Contains("partial", decision.Reason);
+        TestAssert.Contains("more complete direct source", decision.Guidance);
+        return Task.CompletedTask;
+    }
+
+    public static Task ConvergencePolicyFinalizesPartialAnswerUnderProgressPressureAsync()
+    {
+        var evidenceItems = new[]
+        {
+            new EvidenceItem(
+                "read_file",
+                "ProjectLens.Application/AgentOrchestrator.cs",
+                "public sealed class AgentOrchestrator",
+                EvidenceKind.DirectSnippet,
+                false,
+                1.0)
+        };
+        var decision = EvaluateConvergence(
+            evidenceItems,
+            new ConvergenceContext(
+                IterationNumber: 4,
+                DuplicateToolCallCount: 1,
+                ConsecutiveNoProgressCount: 1,
+                NewEvidenceCount: 0));
+
+        TestAssert.Equal(ConvergenceDecisionType.FinalizePartialAnswer, decision.DecisionType);
+        TestAssert.Contains("did not add reliable progress", decision.Reason);
+        TestAssert.Contains("explicit limitations", decision.Guidance);
+        return Task.CompletedTask;
+    }
+
+    public static Task ConvergencePolicyHandlesMixedModerateEvidenceDeterministicallyAsync()
+    {
+        var evidenceItems = new[]
+        {
+            new EvidenceItem(
+                "read_file",
+                "ProjectLens.Application/AgentOrchestrator.cs",
+                "public async Task<AgentResponse> RunAsync",
+                EvidenceKind.DirectSnippet,
+                false,
+                1.0),
+            new EvidenceItem(
+                "search_files",
+                "ProjectLens.Application/DefaultRecoveryPolicy.cs",
+                "BuildMultiFileAggregationPrompt",
+                EvidenceKind.SearchHit,
+                true,
+                1.0),
+            new EvidenceItem(
+                "list_files",
+                ".",
+                "ProjectLens.Application",
+                EvidenceKind.ToolObservation,
+                false,
+                0.7)
+        };
+        var decision = EvaluateConvergence(evidenceItems);
+
+        TestAssert.Equal(ConvergenceDecisionType.ContinueWithBroaderSearch, decision.DecisionType);
+        TestAssert.False(string.IsNullOrWhiteSpace(decision.Reason), "The policy should explain mixed evidence decisions.");
+        TestAssert.False(string.IsNullOrWhiteSpace(decision.Guidance), "The policy should provide next-action guidance.");
+        return Task.CompletedTask;
+    }
+
+    private static ConvergenceDecision EvaluateConvergence(
+        IReadOnlyCollection<EvidenceItem> evidenceItems,
+        ConvergenceContext? context = null)
+    {
+        IEvidenceEvaluator evidenceEvaluator = new RuleBasedEvidenceEvaluator();
+        IConvergencePolicy convergencePolicy = new RuleBasedConvergencePolicy();
+
+        return convergencePolicy.Evaluate(
+            evidenceEvaluator.Assess(evidenceItems),
+            evidenceItems,
+            context ?? new ConvergenceContext());
     }
 
     public static async Task InMemoryAgentSessionStoreSavesAndLoadsStateAsync()
