@@ -1,6 +1,6 @@
 # ProjectLens - AI-Powered Developer Workspace Agent
 
-> ProjectLens is a host-agnostic, evidence-driven code analysis agent  with explicit structured evidence extraction that retrieves and evaluates code context through bounded tool execution.
+> ProjectLens is a host-agnostic, evidence-driven, convergence-controlled code analysis agent with explicit structured evidence extraction and bounded execution that retrieves and evaluates code context through controlled tool execution.
 ProjectLens is a **.NET 8 AI-assisted code analysis agent** that explores and analyzes a local codebase using:
 * 🧠 LLM-guided reasoning
 * 🧩 tool-based orchestration
@@ -86,7 +86,7 @@ Tool Calls (if needed)
 Filesystem + Search Tools
      |
      v
-Evidence Extraction + Evaluation + Aggregation
+Evidence Extraction + Evaluation + Convergence + Controlled Execution
      |
      v
 Compressed Context
@@ -137,9 +137,56 @@ This enables:
 👉 The system now knows *what it knows*, not just *what it says*.
 
 ---
+
+## 🎯 Convergence-Controlled Reasoning
+
+ProjectLens now includes an explicit **convergence control layer** that guides how the agent progresses through a problem.
+
+Instead of blindly continuing tool execution, the system evaluates:
+
+- how sufficient the evidence is
+- how broad the coverage is
+- whether progress is being made
+- whether further retrieval is meaningful
+- explicitly tracks and communicates uncertainty when evidence is incomplete
+
+### Convergence Decisions
+
+Each iteration produces a deterministic decision:
+
+- `ContinueWithBroaderSearch` – explore different areas of the codebase
+- `ContinueWithDeeperRead` – inspect relevant files more deeply
+- `FinalizePartialAnswer` – stop and provide a bounded answer with limitations
+- `FinalizeConfidentAnswer` – stop and provide a fully grounded answer
+
+### Why this matters
+
+This prevents:
+
+- 🔁 infinite or redundant loops
+- 📂 excessive file reads ("over-fetching")
+- 🧠 premature or overconfident answers
+
+👉 The agent now knows **when to continue, when to change strategy, and when to stop**.
+
+---
+
+### 🧭 Guided Execution Loop
+
+During each iteration, ProjectLens:
+
+1. collects structured evidence
+2. evaluates evidence sufficiency and coverage
+3. decides the next action via convergence policy
+4. injects guidance into the model
+5. enforces bounded execution (fetch budgets + duplicate prevention)
+
+👉 This creates a **closed-loop reasoning system**, not just a tool-calling agent.
+
+---
 ## 🧠 Evolution of ProjectLens
 <details>
-<summary><b>Click to see the Evolution of ProjectLens (v0.2 - v0.8)</b></summary>
+<summary><b>Click to see the Evolution of ProjectLens (v0.2 - v0.9)</b></summary>
      
 ### v0.2 — Stateful Agent
 
@@ -221,6 +268,46 @@ This enables:
   * when queries are conceptual
 * maintains keyword-first, bounded retrieval strategy
 * improves discovery of relevant code beyond exact matches
+
+---
+
+### 🚀 v0.9 — Convergence-Controlled Reasoning
+
+#### 🧠 Evidence evaluation + convergence decisions
+- introduces explicit evidence assessment:
+  - sufficiency
+  - coverage
+  - confidence
+- enables deterministic convergence decisions:
+  - ContinueWithBroaderSearch
+  - ContinueWithDeeperRead
+  - FinalizePartialAnswer
+  - FinalizeConfidentAnswer
+
+#### 🎯 Convergence-guided execution
+- injects convergence guidance into each iteration
+- steers model behavior without hardcoding tool usage
+- reduces redundant or misdirected tool calls
+
+#### ⚙️ Controlled execution loop
+- aligns convergence decisions with orchestrator behavior
+- allows partial finalization when progress stalls
+- prevents conflict between “keep exploring” and “stop now”
+
+#### 🔒 Bounded tool execution (discipline layer)
+- introduces per-iteration fetch budgets:
+  - limits excessive search/read calls
+- prevents over-fetching and runaway execution
+- uses synthetic tool results to guide the model when limits are hit
+
+#### ⚖️ Stability and trust improvements
+- avoids infinite or redundant loops
+- prevents overconfident or premature answers
+- explicitly communicates uncertainty when evidence is incomplete
+
+👉 ProjectLens evolves from an evidence-aware agent into a **convergence-controlled reasoning system**.
+
+> From Stateless Exploration → Stateful Understanding → Feature-Aware Reasoning → Convergence-Controlled Intelligence
 
 ---
 </details>
@@ -347,6 +434,10 @@ ProjectLens:
 * ✅ Weak-evidence detection and recovery strategies
 * ✅ Safe filesystem access (workspace-bound only)
 * ✅ Clean architecture separation (host-agnostic design)
+* ✅ Convergence-aware execution (evidence-driven stopping decisions)
+* ✅ Per-iteration fetch budgets (prevents over-fetching)
+* ✅ Partial-answer finalization under no-progress conditions
+* ✅ Convergence-guided model steering (reduces redundant tool calls)
 
 ---
 
@@ -514,9 +605,9 @@ If `ApiKey` or `Model` is not configured, ProjectLens automatically switches to 
 - 📊 Dependency graphs
 - 🌐 Web UI
 - ⚡ Iteration efficiency optimization
-- 🧠 Smarter convergence control
-- 🧠 Evidence sufficiency evaluation
-- 🎯 Convergence decision engine
+- 🤝 Interactive exploration (user-guided follow-up actions)
+- 🧠 Adaptive convergence tuning based on query type
+- 📊 Evidence visualization and traceability
   
 ---
 
@@ -553,10 +644,10 @@ Each tool represents a capability boundary.
 
 Adding intelligence means adding new capabilities, not rewriting the orchestrator.
 
-It doesn’t just explore and remember — it reasons with awareness of its own observed evidence boundaries.
+It doesn’t just explore and remember — it reasons with awareness of its own observed evidence boundaries and controls its execution based on convergence.
 
 ---
 
 ## 📌 Version
 
-**+ v0.9 — Structured Evidence Foundation**
+**v0.9 — Convergence-Controlled Reasoning System**
