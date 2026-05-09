@@ -13,6 +13,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProjectLens.Infrastructure"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProjectLens.Tests", "ProjectLens.Tests\ProjectLens.Tests.csproj", "{33768C47-A552-4F10-ACE3-34EB22997557}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProjectLens.Api", "ProjectLens.Api\ProjectLens.Api.csproj", "{24539173-A0D1-49EA-94D3-C6F4EB8B6C49}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -83,6 +85,18 @@ Global
 		{33768C47-A552-4F10-ACE3-34EB22997557}.Release|x64.Build.0 = Release|Any CPU
 		{33768C47-A552-4F10-ACE3-34EB22997557}.Release|x86.ActiveCfg = Release|Any CPU
 		{33768C47-A552-4F10-ACE3-34EB22997557}.Release|x86.Build.0 = Release|Any CPU
+		{24539173-A0D1-49EA-94D3-C6F4EB8B6C49}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{24539173-A0D1-49EA-94D3-C6F4EB8B6C49}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{24539173-A0D1-49EA-94D3-C6F4EB8B6C49}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{24539173-A0D1-49EA-94D3-C6F4EB8B6C49}.Debug|x64.Build.0 = Debug|Any CPU
+		{24539173-A0D1-49EA-94D3-C6F4EB8B6C49}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{24539173-A0D1-49EA-94D3-C6F4EB8B6C49}.Debug|x86.Build.0 = Debug|Any CPU
+		{24539173-A0D1-49EA-94D3-C6F4EB8B6C49}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{24539173-A0D1-49EA-94D3-C6F4EB8B6C49}.Release|Any CPU.Build.0 = Release|Any CPU
+		{24539173-A0D1-49EA-94D3-C6F4EB8B6C49}.Release|x64.ActiveCfg = Release|Any CPU
+		{24539173-A0D1-49EA-94D3-C6F4EB8B6C49}.Release|x64.Build.0 = Release|Any CPU
+		{24539173-A0D1-49EA-94D3-C6F4EB8B6C49}.Release|x86.ActiveCfg = Release|Any CPU
+		{24539173-A0D1-49EA-94D3-C6F4EB8B6C49}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

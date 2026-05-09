@@ -268,6 +268,8 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
                 steps.Add(new AgentExecutionStep(
                     $"Convergence guidance: {latestConvergenceEvaluation.Decision.DecisionType}."));
 
+
+                conversation.Add(new ModelToolCallMessage(toolCall));
                 conversation.Add(new ModelToolResultMessage(toolCall.CallId, toolCall.ToolName, modelFacingOutput));
                 sessionState = await _sessionContextService.UpdateAsync(
                     sessionState,
@@ -363,6 +365,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             $"Prevented duplicate tool call '{toolCall.ToolName}' with the same arguments.",
             false));
 
+        conversation.Add(new ModelToolCallMessage(toolCall));
         conversation.Add(new ModelToolResultMessage(
             toolCall.CallId,
             toolCall.ToolName,
@@ -393,6 +396,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             $"Skipped tool call '{toolCall.ToolName}' because the per-iteration fetch budget was reached.",
             false));
 
+        conversation.Add(new ModelToolCallMessage(toolCall));
         conversation.Add(new ModelToolResultMessage(
             toolCall.CallId,
             toolCall.ToolName,

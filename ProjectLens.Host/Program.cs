@@ -10,7 +10,7 @@ using ProjectLens.Infrastructure.Tools;
 try
 {
     var settingsPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
-    var settings = HostSettingsLoader.Load(settingsPath);
+    var settings = ProjectLensSettingsLoader.Load(settingsPath);
     var modelSettings = settings.GetModelProviderSettings();
 
     IModelClientFactory modelClientFactory = new DefaultModelClientFactory();
@@ -37,6 +37,8 @@ try
         {
             new ListFilesTool(workspacePath),
             new ReadFileTool(workspacePath),
+            new WriteFileTool(workspacePath),
+            new EditFileTool(workspacePath),
             new SearchFilesTool(
                 workspacePath,
                 evidenceQualityEvaluator,
@@ -149,75 +151,5 @@ static void PrintResponse(AgentResponse response)
             : $": {toolResult.ErrorMessage ?? "Unknown tool error."}";
 
         Console.WriteLine($"{toolResult.ToolName}: {status}{detail}");
-    }
-}
-
-internal static class HostSettingsLoader
-{
-    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
-    {
-        PropertyNameCaseInsensitive = true
-    };
-
-    public static HostSettings Load(string settingsPath)
-    {
-        if (!File.Exists(settingsPath))
-        {
-            return new HostSettings();
-        }
-
-        var json = File.ReadAllText(settingsPath);
-        return JsonSerializer.Deserialize<HostSettings>(json, SerializerOptions) ?? new HostSettings();
-    }
-}
-
-internal sealed record HostSettings
-{
-    public ModelProviderSettings Model { get; init; } = new();
-
-    public OpenAiModelClientOptions OpenAI { get; init; } = new();
-
-    public ModelProviderSettings GetModelProviderSettings()
-    {
-        if (!IsNoProviderSelected(Model.Provider))
-        {
-            return Model;
-        }
-
-        return new ModelProviderSettings
-        {
-            Provider = OpenAI.IsConfigured ? ModelProviderNames.OpenAI : ModelProviderNames.None,
-            Model = OpenAI.Model,
-            ApiKey = OpenAI.ApiKey,
-            BaseUrl = OpenAI.BaseUrl,
-            MaxIterations = OpenAI.MaxIterations
-        };
-    }
-
-    public OpenAiModelClientOptions GetOpenAiSettings()
-    {
-        if (IsProvider(Model.Provider, ModelProviderNames.OpenAI))
-        {
-            return OpenAI with
-            {
-                ApiKey = string.IsNullOrWhiteSpace(Model.ApiKey) ? OpenAI.ApiKey : Model.ApiKey,
-                Model = string.IsNullOrWhiteSpace(Model.Model) ? OpenAI.Model : Model.Model,
-                BaseUrl = string.IsNullOrWhiteSpace(Model.BaseUrl) ? OpenAI.BaseUrl : Model.BaseUrl,
-                MaxIterations = Model.MaxIterations
-            };
-        }
-
-        return OpenAI;
-    }
-
-    private static bool IsNoProviderSelected(string? provider)
-    {
-        return string.IsNullOrWhiteSpace(provider) ||
-            IsProvider(provider, ModelProviderNames.None);
-    }
-
-    private static bool IsProvider(string? provider, string expectedProvider)
-    {
-        return string.Equals(provider?.Trim(), expectedProvider, StringComparison.OrdinalIgnoreCase);
     }
 }

@@ -6,5 +6,7 @@ public static class ModelProviderNames
 
     public const string OpenAI = "OpenAI";
 
+    public const string Anthropic = "Anthropic";
+
     public const string Fake = "Fake";
 }
