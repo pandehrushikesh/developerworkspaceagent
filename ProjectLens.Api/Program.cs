@@ -9,13 +9,26 @@ using ProjectLens.Infrastructure.Tools;
 
 var builder = WebApplication.CreateBuilder(args);
 
+var settings = builder.Configuration.Get<ProjectLensSettings>() ?? new ProjectLensSettings();
+
+builder.Services.AddSingleton(settings);
+
 builder.Services.AddCors(options =>
     options.AddDefaultPolicy(policy =>
-        policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
+    {
+        var origins = settings.AllowedOrigins;
+        if (origins.Length == 1 && origins[0] == "*")
+        {
+            policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader();
+        }
+        else
+        {
+            policy.WithOrigins(origins).AllowAnyMethod().AllowAnyHeader();
+        }
+    }));
 
 builder.Services.AddSingleton<IAgentOrchestrator>(sp =>
 {
-    var settings = builder.Configuration.Get<ProjectLensSettings>() ?? new ProjectLensSettings();
     var modelSettings = settings.GetModelProviderSettings();
     var openAiSettings = settings.GetOpenAiSettings();
 
@@ -61,7 +74,11 @@ app.UseCors();
 
 app.MapGet("/api/health", () => Results.Ok(new { status = "ok", timestamp = DateTimeOffset.UtcNow }));
 
-app.MapPost("/api/query", async (QueryRequest request, IAgentOrchestrator orchestrator, CancellationToken ct) =>
+app.MapPost("/api/query", async (
+    QueryRequest request,
+    IAgentOrchestrator orchestrator,
+    ProjectLensSettings apiSettings,
+    CancellationToken ct) =>
 {
     if (string.IsNullOrWhiteSpace(request.WorkspacePath))
     {
@@ -74,9 +91,15 @@ app.MapPost("/api/query", async (QueryRequest request, IAgentOrchestrator orches
     }
 
     var normalizedPath = Path.GetFullPath(request.WorkspacePath);
+
     if (!Directory.Exists(normalizedPath))
     {
         return Results.BadRequest(new { error = "The workspace path does not exist." });
+    }
+
+    if (!IsWorkspaceAllowed(normalizedPath, apiSettings.AllowedWorkspaceRoots))
+    {
+        return Results.BadRequest(new { error = "The workspace path is not within an allowed root." });
     }
 
     var agentRequest = new AgentRequest(request.Prompt, normalizedPath);
@@ -97,3 +120,18 @@ app.MapPost("/api/query", async (QueryRequest request, IAgentOrchestrator orches
 });
 
 app.Run();
+
+static bool IsWorkspaceAllowed(string normalizedPath, string[] allowedRoots)
+{
+    if (allowedRoots.Length == 0)
+    {
+        return true;
+    }
+
+    return allowedRoots.Any(root =>
+    {
+        var normalizedRoot = Path.GetFullPath(root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        return normalizedPath.Equals(normalizedRoot, StringComparison.OrdinalIgnoreCase)
+            || normalizedPath.StartsWith(normalizedRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+    });
+}

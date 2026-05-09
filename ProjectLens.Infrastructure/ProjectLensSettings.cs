@@ -9,6 +9,18 @@ public sealed record ProjectLensSettings
 
     public OpenAiModelClientOptions OpenAI { get; init; } = new();
 
+    /// <summary>
+    /// Origins allowed to call the API. Defaults to localhost:3000 (Vite dev server).
+    /// Set to ["*"] only in fully trusted, isolated environments.
+    /// </summary>
+    public string[] AllowedOrigins { get; init; } = ["http://localhost:3000"];
+
+    /// <summary>
+    /// If non-empty, workspacePath in API requests must be within one of these roots.
+    /// Leave empty to allow any existing directory (local dev only).
+    /// </summary>
+    public string[] AllowedWorkspaceRoots { get; init; } = [];
+
     public ModelProviderSettings GetModelProviderSettings()
     {
         if (!IsNoProviderSelected(Model.Provider))
