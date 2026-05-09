@@ -37,6 +37,8 @@ try
         {
             new ListFilesTool(workspacePath),
             new ReadFileTool(workspacePath),
+            new WriteFileTool(workspacePath),
+            new EditFileTool(workspacePath),
             new SearchFilesTool(
                 workspacePath,
                 evidenceQualityEvaluator,

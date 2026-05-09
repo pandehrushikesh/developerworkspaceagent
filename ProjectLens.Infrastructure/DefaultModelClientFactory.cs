@@ -1,4 +1,5 @@
 using ProjectLens.Application.Abstractions;
+using ProjectLens.Infrastructure.Anthropic;
 using ProjectLens.Infrastructure.Fake;
 using ProjectLens.Infrastructure.OpenAI;
 
@@ -15,7 +16,8 @@ public sealed class DefaultModelClientFactory : IModelClientFactory
         {
             [ModelProviderNames.None] = _ => null,
             [ModelProviderNames.Fake] = settings => new FakeModelClient(settings.Model),
-            [ModelProviderNames.OpenAI] = CreateOpenAiClient
+            [ModelProviderNames.OpenAI] = CreateOpenAiClient,
+            [ModelProviderNames.Anthropic] = CreateAnthropicClient
         };
     }
 
@@ -43,6 +45,20 @@ public sealed class DefaultModelClientFactory : IModelClientFactory
 
         return options.IsConfigured
             ? new OpenAiModelClient(options)
+            : null;
+    }
+
+    private static IModelClient? CreateAnthropicClient(ModelProviderSettings settings)
+    {
+        var options = new AnthropicModelClientOptions
+        {
+            ApiKey = settings.ApiKey,
+            Model = settings.Model,
+            BaseUrl = settings.BaseUrl
+        };
+
+        return options.IsConfigured
+            ? new AnthropicModelClient(options)
             : null;
     }
 }

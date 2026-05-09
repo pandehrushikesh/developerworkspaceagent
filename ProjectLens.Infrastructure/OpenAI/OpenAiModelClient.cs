@@ -69,6 +69,7 @@ public sealed class OpenAiModelClient : IModelClient
     private static object[] BuildInput(IReadOnlyCollection<ModelConversationItem> conversation)
     {
         return conversation
+            .Where(item => item is not ModelToolCallMessage)
             .Select(item => item switch
             {
                 ModelTextMessage textMessage => (object)new
