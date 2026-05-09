@@ -15,8 +15,9 @@ builder.Services.AddCors(options =>
 
 builder.Services.AddSingleton<IAgentOrchestrator>(sp =>
 {
-    var modelSettings = ResolveModelSettings(builder.Configuration);
-    var openAiSettings = ResolveOpenAiSettings(builder.Configuration, modelSettings);
+    var settings = builder.Configuration.Get<ProjectLensSettings>() ?? new ProjectLensSettings();
+    var modelSettings = settings.GetModelProviderSettings();
+    var openAiSettings = settings.GetOpenAiSettings();
 
     IModelClientFactory factory = new DefaultModelClientFactory();
     IModelClient? modelClient = factory.Create(modelSettings);
@@ -96,47 +97,3 @@ app.MapPost("/api/query", async (QueryRequest request, IAgentOrchestrator orches
 });
 
 app.Run();
-
-static ModelProviderSettings ResolveModelSettings(IConfiguration config)
-{
-    var model = config.GetSection("Model").Get<ModelProviderSettings>() ?? new ModelProviderSettings();
-
-    if (!IsNoProvider(model.Provider))
-    {
-        return model;
-    }
-
-    var openAi = config.GetSection("OpenAI").Get<OpenAiModelClientOptions>() ?? new OpenAiModelClientOptions();
-    return openAi.IsConfigured
-        ? new ModelProviderSettings
-        {
-            Provider = ModelProviderNames.OpenAI,
-            Model = openAi.Model,
-            ApiKey = openAi.ApiKey,
-            BaseUrl = openAi.BaseUrl,
-            MaxIterations = openAi.MaxIterations
-        }
-        : new ModelProviderSettings { Provider = ModelProviderNames.None };
-}
-
-static OpenAiModelClientOptions ResolveOpenAiSettings(IConfiguration config, ModelProviderSettings modelSettings)
-{
-    var openAi = config.GetSection("OpenAI").Get<OpenAiModelClientOptions>() ?? new OpenAiModelClientOptions();
-
-    if (!string.Equals(modelSettings.NormalizedProvider, ModelProviderNames.OpenAI, StringComparison.OrdinalIgnoreCase))
-    {
-        return openAi;
-    }
-
-    return openAi with
-    {
-        ApiKey = string.IsNullOrWhiteSpace(modelSettings.ApiKey) ? openAi.ApiKey : modelSettings.ApiKey,
-        Model = string.IsNullOrWhiteSpace(modelSettings.Model) ? openAi.Model : modelSettings.Model,
-        BaseUrl = string.IsNullOrWhiteSpace(modelSettings.BaseUrl) ? openAi.BaseUrl : modelSettings.BaseUrl,
-        MaxIterations = modelSettings.MaxIterations
-    };
-}
-
-static bool IsNoProvider(string? provider) =>
-    string.IsNullOrWhiteSpace(provider) ||
-    string.Equals(provider.Trim(), ModelProviderNames.None, StringComparison.OrdinalIgnoreCase);

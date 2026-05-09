@@ -24,7 +24,10 @@ export default function Sidebar({ workspacePath, onWorkspaceChange, messageCount
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
-    if (e.key === 'Enter') handleApply()
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      handleApply()
+    }
   }
 
   const isSet = workspacePath.trim().length > 0

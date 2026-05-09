@@ -33,6 +33,11 @@ public sealed class WriteFileTool : ITool
 
             var created = !File.Exists(filePath);
 
+            if (!created && !TextFileDetector.IsTextFile(filePath))
+            {
+                return ToolResultFactory.Failure(Definition.Name, "Cannot overwrite a binary file.");
+            }
+
             var directory = Path.GetDirectoryName(filePath);
             if (!string.IsNullOrWhiteSpace(directory))
             {
