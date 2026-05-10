@@ -567,6 +567,19 @@ Try asking:
 - "Add a GET /api/tags endpoint that returns all unique tags"
 - "Refactor BlogService to use an interface"
 
+### Screenshots of UI
+Basic Question:
+<img width="1914" height="1029" alt="ProjectLens_BasicQuestion" src="https://github.com/user-attachments/assets/eb58f882-8838-41fa-8889-521282ac2edb" />
+
+Advance Question
+<img width="1917" height="1025" alt="Projectlens_AdvQuestion" src="https://github.com/user-attachments/assets/2d005dd6-9d5c-4118-8e0f-952c30886478" />
+
+Architectural Question
+<img width="1917" height="1028" alt="Projectlens_ArchitectureQuestion" src="https://github.com/user-attachments/assets/10c3f8c6-0bd7-489d-9bf6-a4c1f0c8b21d" />
+
+Code Review Question
+<img width="1917" height="1027" alt="Projectlens_CodeReview" src="https://github.com/user-attachments/assets/d0654c13-3f40-42e3-b897-71bd774867af" />
+
 ---
 
 ## 🛠️ Available Tools
