@@ -1,0 +1,256 @@
+.evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin-top: 4px;
+}
+
+.evidence-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  color: var(--color-text-dim);
+  font-size: 12px;
+  padding: 4px 0;
+  text-align: left;
+  transition: color 0.15s;
+}
+
+.evidence-toggle:hover {
+  color: var(--color-text);
+}
+
+.evidence-badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-weight: 500;
+}
+
+.evidence-badge.sufficient {
+  background: rgba(78, 201, 176, 0.15);
+  color: var(--color-success);
+}
+
+.evidence-badge.partial {
+  background: rgba(220, 220, 170, 0.15);
+  color: var(--color-warning);
+}
+
+.evidence-body {
+  margin-top: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+/* Tabs */
+.evidence-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.evidence-tab {
+  flex: 1;
+  background: transparent;
+  color: var(--color-text-dim);
+  font-size: 12px;
+  padding: 6px 12px;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+  cursor: pointer;
+}
+
+.evidence-tab:hover {
+  color: var(--color-text);
+}
+
+.evidence-tab.active {
+  color: var(--color-accent);
+  border-bottom-color: var(--color-accent);
+}
+
+/* Summary tab */
+.evidence-summary {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.evidence-scores {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.score-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.score-label {
+  width: 68px;
+  color: var(--color-text-dim);
+  flex-shrink: 0;
+}
+
+.score-track {
+  flex: 1;
+  height: 6px;
+  background: var(--color-border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.score-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.score-fill-high { background: var(--color-success); }
+.score-fill-mid  { background: var(--color-warning); }
+.score-fill-low  { background: var(--color-error); }
+
+.score-value {
+  width: 32px;
+  text-align: right;
+  color: var(--color-text-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.evidence-reason {
+  font-size: 11px;
+  color: var(--color-text-dim);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.evidence-missing {
+  font-size: 11px;
+  color: var(--color-text-dim);
+}
+
+.evidence-missing-label {
+  font-weight: 500;
+  color: var(--color-warning);
+}
+
+.evidence-missing ul {
+  margin: 2px 0 0 16px;
+  padding: 0;
+  list-style: disc;
+}
+
+.evidence-missing li {
+  line-height: 1.5;
+}
+
+.evidence-breakdown {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* Items tab */
+.evidence-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.evidence-item {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.evidence-item:last-child {
+  border-bottom: none;
+}
+
+.evidence-item-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.evidence-source {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-dim);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.evidence-partial {
+  font-size: 10px;
+  color: var(--color-warning);
+  opacity: 0.8;
+}
+
+.evidence-conf {
+  font-size: 10px;
+  color: var(--color-text-dim);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.evidence-content {
+  font-size: 11px;
+  color: var(--color-text-dim);
+  line-height: 1.5;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Kind chips */
+.evidence-kind {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-weight: 500;
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.evidence-kind-searchhit {
+  background: rgba(0, 122, 204, 0.2);
+  color: var(--color-accent);
+}
+
+.evidence-kind-directsnippet {
+  background: rgba(78, 201, 176, 0.15);
+  color: var(--color-success);
+}
+
+.evidence-kind-filesummary {
+  background: rgba(220, 220, 170, 0.15);
+  color: var(--color-warning);
+}
+
+.evidence-kind-toolobservation {
+  background: rgba(138, 138, 138, 0.15);
+  color: var(--color-text-dim);
+}
+
+.evidence-kind-githistory {
+  background: rgba(179, 135, 255, 0.15);
+  color: #b387ff;
+}

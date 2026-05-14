@@ -1,5 +1,6 @@
 import type { Message } from '../types'
 import ExecutionTrace from './ExecutionTrace'
+import EvidencePanel from './EvidencePanel'
 import './MessageItem.css'
 
 interface MessageItemProps {
@@ -21,10 +22,25 @@ export default function MessageItem({ message }: MessageItemProps) {
         <div className="message-avatar">⬡</div>
         <div className="message-bubble message-bubble-agent">
           {loading ? (
-            <div className="thinking">
-              <span className="thinking-dot" />
-              <span className="thinking-dot" />
-              <span className="thinking-dot" />
+            <div className="thinking-stream">
+              {(message.streamingOutput) ? (
+                <div className="answer-text streaming">
+                  {formatAnswer(message.streamingOutput)}
+                  <span className="stream-cursor" />
+                </div>
+              ) : (
+                <div className="thinking">
+                  <span className="thinking-dot" />
+                  <span className="thinking-dot" />
+                  <span className="thinking-dot" />
+                </div>
+              )}
+              {(message.streamingSteps?.length || message.streamingToolResults?.length) ? (
+                <ExecutionTrace
+                  steps={message.streamingSteps ?? []}
+                  toolResults={message.streamingToolResults ?? []}
+                />
+              ) : null}
             </div>
           ) : response ? (
             <>
@@ -44,6 +60,10 @@ export default function MessageItem({ message }: MessageItemProps) {
               <ExecutionTrace
                 steps={response.executionSteps}
                 toolResults={response.toolResults}
+              />
+              <EvidencePanel
+                items={response.evidenceItems ?? []}
+                assessment={response.finalAssessment}
               />
             </>
           ) : null}

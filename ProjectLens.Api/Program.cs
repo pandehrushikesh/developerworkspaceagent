@@ -1,3 +1,6 @@
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using ProjectLens.Api.Models;
 using ProjectLens.Application;
 using ProjectLens.Application.Abstractions;
@@ -61,7 +64,10 @@ builder.Services.AddSingleton<IAgentOrchestrator>(sp =>
             new SearchFilesTool(
                 workspacePath,
                 evidenceQualityEvaluator,
-                new LocalSemanticSearchService(workspacePath, embeddingService))
+                new LocalSemanticSearchService(workspacePath, embeddingService)),
+            new GitLogTool(workspacePath),
+            new GitBlameTool(workspacePath),
+            new GitDiffTool(workspacePath)
         },
         orchestrationDependencies,
         modelClient,
@@ -105,6 +111,14 @@ app.MapPost("/api/query", async (
     var agentRequest = new AgentRequest(request.Prompt, normalizedPath);
     var agentResponse = await orchestrator.ProcessAsync(agentRequest, ct);
 
+    var evidenceItems = agentResponse.EvidenceItems?
+        .Select(e => new EvidenceItemDto(e.ToolName, e.SourceId, e.Content, e.Kind, e.IsPartial, e.Confidence))
+        .ToArray();
+
+    var finalAssessment = agentResponse.FinalAssessment is { } a
+        ? new EvidenceAssessmentDto(a.IsSufficient, a.CoverageScore, a.ConfidenceScore, a.Reason, a.MissingAreas)
+        : null;
+
     var response = new QueryResponse(
         agentResponse.Success,
         agentResponse.Output,
@@ -114,9 +128,120 @@ app.MapPost("/api/query", async (
             .ToArray() ?? [],
         agentResponse.ToolResults?
             .Select(r => new ToolResultDto(r.ToolName, r.Success, r.ErrorMessage))
-            .ToArray() ?? []);
+            .ToArray() ?? [],
+        evidenceItems,
+        finalAssessment);
 
     return Results.Ok(response);
+});
+
+app.MapPost("/api/query/stream", async (
+    QueryRequest request,
+    IAgentOrchestrator orchestrator,
+    ProjectLensSettings apiSettings,
+    HttpContext httpContext,
+    CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(request.WorkspacePath))
+    {
+        httpContext.Response.StatusCode = 400;
+        await httpContext.Response.WriteAsJsonAsync(new { error = "workspacePath is required." }, ct);
+        return;
+    }
+
+    if (string.IsNullOrWhiteSpace(request.Prompt))
+    {
+        httpContext.Response.StatusCode = 400;
+        await httpContext.Response.WriteAsJsonAsync(new { error = "prompt is required." }, ct);
+        return;
+    }
+
+    var normalizedPath = Path.GetFullPath(request.WorkspacePath);
+
+    if (!Directory.Exists(normalizedPath))
+    {
+        httpContext.Response.StatusCode = 400;
+        await httpContext.Response.WriteAsJsonAsync(new { error = "The workspace path does not exist." }, ct);
+        return;
+    }
+
+    if (!IsWorkspaceAllowed(normalizedPath, apiSettings.AllowedWorkspaceRoots))
+    {
+        httpContext.Response.StatusCode = 400;
+        await httpContext.Response.WriteAsJsonAsync(new { error = "The workspace path is not within an allowed root." }, ct);
+        return;
+    }
+
+    httpContext.Response.ContentType = "text/event-stream";
+    httpContext.Response.Headers.CacheControl = "no-cache";
+    httpContext.Response.Headers["X-Accel-Buffering"] = "no";
+    await httpContext.Response.Body.FlushAsync(ct);
+
+    var sseOptions = new JsonSerializerOptions
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+    };
+
+    async Task WriteSseAsync(object payload)
+    {
+        var json = JsonSerializer.Serialize(payload, sseOptions);
+        var line = $"data: {json}\n\n";
+        await httpContext.Response.Body.WriteAsync(Encoding.UTF8.GetBytes(line), ct);
+        await httpContext.Response.Body.FlushAsync(ct);
+    }
+
+    var progress = new Progress<AgentProgressEvent>(evt =>
+    {
+        _ = evt switch
+        {
+            StepProgressEvent step =>
+                WriteSseAsync(new { type = "step", description = step.Description, success = step.Success }),
+            ToolResultProgressEvent tool =>
+                WriteSseAsync(new { type = "tool_result", toolName = tool.ToolName, success = tool.Success, errorMessage = tool.ErrorMessage }),
+            AnswerProgressEvent answer =>
+                WriteSseAsync(new { type = "answer", text = answer.Text }),
+            _ => Task.CompletedTask
+        };
+    });
+
+    try
+    {
+        var agentRequest = new AgentRequest(request.Prompt, normalizedPath);
+        var agentResponse = await orchestrator.ProcessAsync(agentRequest, progress, ct);
+
+        var evidenceItems = agentResponse.EvidenceItems?
+            .Select(e => new EvidenceItemDto(e.ToolName, e.SourceId, e.Content, e.Kind, e.IsPartial, e.Confidence))
+            .ToArray();
+
+        var finalAssessment = agentResponse.FinalAssessment is { } a
+            ? new EvidenceAssessmentDto(a.IsSufficient, a.CoverageScore, a.ConfidenceScore, a.Reason, a.MissingAreas)
+            : null;
+
+        await WriteSseAsync(new
+        {
+            type = "done",
+            success = agentResponse.Success,
+            output = agentResponse.Output,
+            errorMessage = agentResponse.ErrorMessage,
+            executionSteps = agentResponse.ExecutionSteps?
+                .Select(s => new { description = s.Description, success = s.Success })
+                .ToArray() ?? Array.Empty<object>(),
+            toolResults = agentResponse.ToolResults?
+                .Select(r => new { toolName = r.ToolName, success = r.Success, errorMessage = r.ErrorMessage })
+                .ToArray() ?? Array.Empty<object>(),
+            evidenceItems,
+            finalAssessment
+        });
+    }
+    catch (OperationCanceledException)
+    {
+        // client disconnected — nothing to do
+    }
+    catch (Exception ex)
+    {
+        await WriteSseAsync(new { type = "error", message = ex.Message });
+    }
 });
 
 app.Run();

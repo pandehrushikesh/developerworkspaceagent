@@ -9,6 +9,9 @@ public sealed class DefaultToolOutputAdapter : IToolOutputAdapter
 {
     private const string ReadFileToolName = "read_file";
     private const string SearchFilesToolName = "search_files";
+    private const string GitLogToolName = "git_log";
+    private const string GitBlameToolName = "git_blame";
+    private const string GitDiffToolName = "git_diff";
 
     private readonly IEvidenceQualityEvaluator? _evidenceQualityEvaluator;
     private readonly IFileCompressor? _fileCompressor;
@@ -104,6 +107,13 @@ public sealed class DefaultToolOutputAdapter : IToolOutputAdapter
             var searchAdaptation = SummarizeSearchResults(rawToolOutput, userPrompt, _evidenceQualityEvaluator);
             var promptText = AppendAggregatedEvidenceContext(searchAdaptation.PromptText, updatedAggregatedEvidenceContext);
             return searchAdaptation with { PromptText = promptText };
+        }
+
+        if (string.Equals(toolName, GitLogToolName, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(toolName, GitBlameToolName, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(toolName, GitDiffToolName, StringComparison.OrdinalIgnoreCase))
+        {
+            return SummarizeGitOutput(toolName, rawToolOutput);
         }
 
         return new ToolAdaptationResult(
@@ -493,6 +503,127 @@ public sealed class DefaultToolOutputAdapter : IToolOutputAdapter
         }
 
         return score;
+    }
+
+    private static ToolAdaptationResult SummarizeGitOutput(string toolName, string rawToolOutput)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(rawToolOutput);
+            var root = document.RootElement;
+
+            var builder = new StringBuilder();
+            var evidenceItems = new List<EvidenceItem>();
+
+            if (string.Equals(toolName, GitLogToolName, StringComparison.OrdinalIgnoreCase))
+            {
+                var filterPath = root.TryGetProperty("FilterPath", out var fp) ? fp.GetString() : null;
+                var totalReturned = root.TryGetProperty("TotalReturned", out var tr) ? tr.GetInt32() : 0;
+
+                builder.AppendLine($"git_log: {totalReturned} commit(s){(filterPath is not null ? $" for {filterPath}" : string.Empty)}");
+
+                if (root.TryGetProperty("Commits", out var commits))
+                {
+                    foreach (var commit in commits.EnumerateArray())
+                    {
+                        var shortHash = commit.TryGetProperty("ShortHash", out var sh) ? sh.GetString() ?? string.Empty : string.Empty;
+                        var author = commit.TryGetProperty("Author", out var a) ? a.GetString() ?? string.Empty : string.Empty;
+                        var date = commit.TryGetProperty("Date", out var d) ? d.GetString() ?? string.Empty : string.Empty;
+                        var message = commit.TryGetProperty("Message", out var m) ? m.GetString() ?? string.Empty : string.Empty;
+
+                        var filesChanged = commit.TryGetProperty("FilesChanged", out var fc)
+                            ? fc.EnumerateArray().Select(f => f.GetString() ?? string.Empty).Where(f => f.Length > 0).ToArray()
+                            : Array.Empty<string>();
+
+                        var snippet = $"{shortHash} {author} ({date[..Math.Min(10, date.Length)]}) {message}";
+                        builder.AppendLine($"- {snippet}");
+                        if (filesChanged.Length > 0)
+                        {
+                            builder.AppendLine($"  Files: {string.Join(", ", filesChanged.Take(5))}{(filesChanged.Length > 5 ? "…" : string.Empty)}");
+                        }
+
+                        var sourceId = filesChanged.FirstOrDefault() ?? GitLogToolName;
+                        evidenceItems.Add(new EvidenceItem(
+                            GitLogToolName,
+                            sourceId,
+                            CreateSnippet(snippet),
+                            EvidenceKind.GitHistory,
+                            false,
+                            0.9));
+                    }
+                }
+            }
+            else if (string.Equals(toolName, GitBlameToolName, StringComparison.OrdinalIgnoreCase))
+            {
+                var path = root.TryGetProperty("Path", out var p) ? p.GetString() ?? string.Empty : string.Empty;
+                builder.AppendLine($"git_blame: {path}");
+
+                if (root.TryGetProperty("Lines", out var blameLinesEl))
+                {
+                    var blameLines = blameLinesEl.EnumerateArray().ToArray();
+                    builder.AppendLine($"{blameLines.Length} line(s) annotated");
+
+                    var authorGroups = blameLines
+                        .GroupBy(l => l.TryGetProperty("Author", out var a) ? a.GetString() ?? string.Empty : string.Empty)
+                        .OrderByDescending(g => g.Count())
+                        .Take(5);
+
+                    foreach (var group in authorGroups)
+                    {
+                        builder.AppendLine($"- {group.Key}: {group.Count()} line(s)");
+                    }
+
+                    var firstLine = blameLines.FirstOrDefault();
+                    if (firstLine.ValueKind != JsonValueKind.Undefined)
+                    {
+                        var author = firstLine.TryGetProperty("Author", out var fa) ? fa.GetString() ?? string.Empty : string.Empty;
+                        var date = firstLine.TryGetProperty("Date", out var fd) ? fd.GetString() ?? string.Empty : string.Empty;
+                        var summary = firstLine.TryGetProperty("Summary", out var fs) ? fs.GetString() ?? string.Empty : string.Empty;
+                        var snippet = $"{path} — last touched by {author} ({date[..Math.Min(10, date.Length)]}) in '{summary}'";
+                        evidenceItems.Add(new EvidenceItem(GitBlameToolName, path, CreateSnippet(snippet), EvidenceKind.GitHistory, false, 0.9));
+                    }
+                }
+            }
+            else if (string.Equals(toolName, GitDiffToolName, StringComparison.OrdinalIgnoreCase))
+            {
+                var from = root.TryGetProperty("From", out var f) ? f.GetString() ?? string.Empty : string.Empty;
+                var to = root.TryGetProperty("To", out var t) ? t.GetString() ?? string.Empty : string.Empty;
+                var totalFiles = root.TryGetProperty("TotalFilesChanged", out var tf) ? tf.GetInt32() : 0;
+
+                builder.AppendLine($"git_diff: {from}..{to} — {totalFiles} file(s) changed");
+
+                if (root.TryGetProperty("Files", out var filesEl))
+                {
+                    foreach (var file in filesEl.EnumerateArray())
+                    {
+                        var filePath = file.TryGetProperty("Path", out var fp) ? fp.GetString() ?? string.Empty : string.Empty;
+                        var status = file.TryGetProperty("Status", out var s) ? s.GetString() ?? "modified" : "modified";
+                        var additions = file.TryGetProperty("Additions", out var a) ? a.GetInt32() : 0;
+                        var deletions = file.TryGetProperty("Deletions", out var d) ? d.GetInt32() : 0;
+
+                        var snippet = $"{filePath} [{status}] +{additions}/-{deletions}";
+                        builder.AppendLine($"- {snippet}");
+                        evidenceItems.Add(new EvidenceItem(
+                            GitDiffToolName,
+                            filePath,
+                            CreateSnippet(snippet),
+                            EvidenceKind.GitHistory,
+                            false,
+                            0.9));
+                    }
+                }
+            }
+
+            return new ToolAdaptationResult(
+                builder.ToString().TrimEnd(),
+                evidenceItems.Count > 0 ? evidenceItems.ToArray() : [CreateToolObservation(toolName, toolName, rawToolOutput, isPartial: false)]);
+        }
+        catch
+        {
+            return new ToolAdaptationResult(
+                rawToolOutput,
+                [CreateToolObservation(toolName, toolName, rawToolOutput, isPartial: false)]);
+        }
     }
 
     private static EvidenceItem CreateToolObservation(

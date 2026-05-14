@@ -81,11 +81,25 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
 
         return _modelClient is null
             ? ProcessRuleBasedAsync(request, cancellationToken)
-            : ProcessModelDrivenAsync(request, cancellationToken);
+            : ProcessModelDrivenAsync(request, null, cancellationToken);
+    }
+
+    public Task<AgentResponse> ProcessAsync(
+        AgentRequest request,
+        IProgress<AgentProgressEvent> progress,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(progress);
+
+        return _modelClient is null
+            ? ProcessRuleBasedAsync(request, cancellationToken)
+            : ProcessModelDrivenAsync(request, progress, cancellationToken);
     }
 
     private async Task<AgentResponse> ProcessModelDrivenAsync(
         AgentRequest request,
+        IProgress<AgentProgressEvent>? progress,
         CancellationToken cancellationToken)
     {
         var steps = new List<AgentExecutionStep>();
@@ -122,6 +136,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             cancellationToken.ThrowIfCancellationRequested();
 
             steps.Add(new AgentExecutionStep($"Calling model for iteration {iteration}."));
+            Report(progress, new StepProgressEvent($"Calling model for iteration {iteration}.", true));
 
             var modelRequest = BuildModelRequest(
                 conversation,
@@ -138,7 +153,8 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
             {
                 steps.Add(new AgentExecutionStep(
                     $"Model returned a final answer on iteration {iteration}; convergence guidance allowed finalization."));
-                return new AgentResponse(modelResponse.FinalAnswer!, steps.ToArray(), toolResults);
+                Report(progress, new AnswerProgressEvent(modelResponse.FinalAnswer!));
+                return BuildSuccessResponse(modelResponse.FinalAnswer!, steps, toolResults, evidenceItems, latestConvergenceEvaluation);
             }
 
             var finalAnswerDecision = _recoveryPolicy.EvaluateFinalAnswer(
@@ -153,7 +169,8 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
                 if (finalAnswerDecision.ShouldFinalize)
                 {
                     steps.Add(new AgentExecutionStep($"Model returned a final answer on iteration {iteration}."));
-                    return new AgentResponse(finalAnswerDecision.FinalAnswer!, steps.ToArray(), toolResults);
+                    Report(progress, new AnswerProgressEvent(finalAnswerDecision.FinalAnswer!));
+                    return BuildSuccessResponse(finalAnswerDecision.FinalAnswer!, steps, toolResults, evidenceItems, latestConvergenceEvaluation);
                 }
 
                 steps.Add(new AgentExecutionStep(
@@ -232,6 +249,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
                     steps,
                     cancellationToken);
                 toolResults.Add(executionResult);
+                Report(progress, new ToolResultProgressEvent(toolCall.ToolName, executionResult.Success, executionResult.ErrorMessage));
 
                 if (executionResult.Success)
                 {
@@ -267,6 +285,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
                     latestConvergenceEvaluation);
                 steps.Add(new AgentExecutionStep(
                     $"Convergence guidance: {latestConvergenceEvaluation.Decision.DecisionType}."));
+                Report(progress, new StepProgressEvent($"Convergence: {latestConvergenceEvaluation.Decision.DecisionType}.", true));
 
 
                 conversation.Add(new ModelToolCallMessage(toolCall));
@@ -673,6 +692,52 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
 
         invalidResponse = null;
         return true;
+    }
+
+    private AgentResponse BuildSuccessResponse(
+        string output,
+        IEnumerable<AgentExecutionStep> steps,
+        IReadOnlyCollection<ToolExecutionResult> toolResults,
+        IReadOnlyList<EvidenceItem> evidenceItems,
+        ConvergenceEvaluation? convergenceEvaluation)
+    {
+        var domainItems = evidenceItems
+            .Select(e => new AgentEvidenceItem(e.ToolName, e.SourceId, e.Content, e.Kind.ToString(), e.IsPartial, e.Confidence))
+            .ToArray();
+
+        AgentEvidenceAssessment? domainAssessment = null;
+        if (convergenceEvaluation is not null)
+        {
+            var assessment = convergenceEvaluation.Assessment;
+            domainAssessment = new AgentEvidenceAssessment(
+                assessment.IsSufficient,
+                assessment.CoverageScore,
+                assessment.ConfidenceScore,
+                assessment.Reason,
+                assessment.MissingAreas);
+        }
+        else if (evidenceItems.Count > 0)
+        {
+            var assessment = _evidenceEvaluator.Assess(evidenceItems);
+            domainAssessment = new AgentEvidenceAssessment(
+                assessment.IsSufficient,
+                assessment.CoverageScore,
+                assessment.ConfidenceScore,
+                assessment.Reason,
+                assessment.MissingAreas);
+        }
+
+        return new AgentResponse(
+            Output: output,
+            ExecutionSteps: steps.ToArray(),
+            ToolResults: toolResults,
+            EvidenceItems: domainItems.Length > 0 ? domainItems : null,
+            FinalAssessment: domainAssessment);
+    }
+
+    private static void Report(IProgress<AgentProgressEvent>? progress, AgentProgressEvent evt)
+    {
+        progress?.Report(evt);
     }
 
     private static AgentResponse Failure(
