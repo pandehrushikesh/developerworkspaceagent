@@ -49,7 +49,8 @@ public sealed class DefaultInstructionBuilder : IInstructionBuilder
 
         if (!string.IsNullOrWhiteSpace(sessionState.WorkingSummary) ||
             sessionState.VisitedFiles.Count > 0 ||
-            sessionState.RecentToolHistory.Count > 0)
+            sessionState.RecentToolHistory.Count > 0 ||
+            !string.IsNullOrWhiteSpace(sessionState.LastAgentResponse))
         {
             builder.AppendLine();
             builder.AppendLine("Existing session context for this workspace:");

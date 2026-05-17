@@ -3903,7 +3903,10 @@ internal static class ToolTests
         workspace.WriteText("README.md", "# Hello");
 
         var events = new List<AgentProgressEvent>();
-        var progress = new Progress<AgentProgressEvent>(e => events.Add(e));
+        // Use InlineProgress instead of Progress<T> — the latter posts callbacks to
+        // the ThreadPool when there is no SynchronizationContext (console runner),
+        // so assertions after ProcessAsync could see an empty list intermittently.
+        IProgress<AgentProgressEvent> progress = new InlineProgress<AgentProgressEvent>(e => events.Add(e));
 
         var evidenceQualityEvaluator = new RuleBasedEvidenceQualityEvaluator();
         var orchestrationDependencies = AgentOrchestrationDependencies.CreateDefault(
@@ -3942,7 +3945,7 @@ internal static class ToolTests
         workspace.WriteText("README.md", "# Hello");
 
         var events = new List<AgentProgressEvent>();
-        var progress = new Progress<AgentProgressEvent>(e => events.Add(e));
+        IProgress<AgentProgressEvent> progress = new InlineProgress<AgentProgressEvent>(e => events.Add(e));
 
         var evidenceQualityEvaluator = new RuleBasedEvidenceQualityEvaluator();
         var orchestrationDependencies = AgentOrchestrationDependencies.CreateDefault(
@@ -4092,6 +4095,21 @@ internal static class ToolTests
 
         return Task.CompletedTask;
     }
+}
+
+/// <summary>
+/// Synchronous IProgress&lt;T&gt; implementation that invokes the callback inline on
+/// the calling thread.  Use in tests instead of Progress&lt;T&gt;, which posts to the
+/// ThreadPool when no SynchronizationContext is present and can therefore deliver
+/// callbacks after the awaited method returns, causing intermittent test failures.
+/// </summary>
+internal sealed class InlineProgress<T> : IProgress<T>
+{
+    private readonly Action<T> _handler;
+
+    public InlineProgress(Action<T> handler) => _handler = handler;
+
+    public void Report(T value) => _handler(value);
 }
 
 internal sealed class GitTestWorkspace : IDisposable
