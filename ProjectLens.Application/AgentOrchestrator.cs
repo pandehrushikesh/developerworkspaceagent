@@ -154,6 +154,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
                 steps.Add(new AgentExecutionStep(
                     $"Model returned a final answer on iteration {iteration}; convergence guidance allowed finalization."));
                 Report(progress, new AnswerProgressEvent(modelResponse.FinalAnswer!));
+                sessionState = await _sessionContextService.PersistFinalAnswerAsync(sessionState, modelResponse.FinalAnswer!, cancellationToken);
                 return BuildSuccessResponse(modelResponse.FinalAnswer!, steps, toolResults, evidenceItems, latestConvergenceEvaluation);
             }
 
@@ -170,6 +171,7 @@ public sealed class AgentOrchestrator : IAgentOrchestrator
                 {
                     steps.Add(new AgentExecutionStep($"Model returned a final answer on iteration {iteration}."));
                     Report(progress, new AnswerProgressEvent(finalAnswerDecision.FinalAnswer!));
+                    sessionState = await _sessionContextService.PersistFinalAnswerAsync(sessionState, finalAnswerDecision.FinalAnswer!, cancellationToken);
                     return BuildSuccessResponse(finalAnswerDecision.FinalAnswer!, steps, toolResults, evidenceItems, latestConvergenceEvaluation);
                 }
 

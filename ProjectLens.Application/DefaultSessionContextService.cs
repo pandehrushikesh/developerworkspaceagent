@@ -199,6 +199,26 @@ public sealed class DefaultSessionContextService : ISessionContextService
         return $"{toolName}: {normalizedOutput}";
     }
 
+    public async Task<AgentSessionState?> PersistFinalAnswerAsync(
+        AgentSessionState? sessionState,
+        string finalAnswer,
+        CancellationToken cancellationToken = default)
+    {
+        if (sessionState is null || _sessionStore is null || string.IsNullOrWhiteSpace(finalAnswer))
+        {
+            return sessionState;
+        }
+
+        const int maxLength = 800;
+        var truncated = finalAnswer.Length > maxLength
+            ? finalAnswer[..maxLength].TrimEnd() + "\n... (truncated)"
+            : finalAnswer;
+
+        var updatedState = sessionState with { LastAgentResponse = truncated };
+        await _sessionStore.SaveAsync(updatedState, cancellationToken);
+        return updatedState;
+    }
+
     private static string GetSessionId(AgentRequest request)
     {
         if (request.Context is not null &&
