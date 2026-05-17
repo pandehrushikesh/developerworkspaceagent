@@ -65,7 +65,9 @@ internal sealed class GitCommandRunner
         {
             if (e.Data is not null)
             {
-                stdoutBuilder.AppendLine(e.Data);
+                // Use '\n' (not Environment.NewLine) so parsers that split on '\n'
+                // get clean tokens regardless of the OS line-ending convention.
+                stdoutBuilder.Append(e.Data).Append('\n');
             }
         };
 
@@ -73,7 +75,7 @@ internal sealed class GitCommandRunner
         {
             if (e.Data is not null)
             {
-                stderrBuilder.AppendLine(e.Data);
+                stderrBuilder.Append(e.Data).Append('\n');
             }
         };
 

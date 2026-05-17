@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using ProjectLens.Application;
 using ProjectLens.Application.Abstractions;
 using ProjectLens.Domain;
@@ -96,7 +97,25 @@ internal static class Program
             ("AgentOrchestrator continues after duplicate search prevention", ToolTests.AgentOrchestratorContinuesAfterDuplicateSearchPreventionAsync),
             ("AgentOrchestrator handles a single tool call", ToolTests.AgentOrchestratorHandlesSingleToolCallAsync),
             ("AgentOrchestrator handles multiple tool calls", ToolTests.AgentOrchestratorHandlesMultipleToolCallsAsync),
-            ("AgentOrchestrator stops at max iterations", ToolTests.AgentOrchestratorStopsAtMaxIterationsAsync)
+            ("AgentOrchestrator stops at max iterations", ToolTests.AgentOrchestratorStopsAtMaxIterationsAsync),
+            // v1.1: Git tools
+            ("GitLogTool rejects non-git workspace", ToolTests.GitLogToolRejectsNonGitWorkspaceAsync),
+            ("GitLogTool returns commits from a git repository", ToolTests.GitLogToolReturnsCommitsAsync),
+            ("GitLogTool respects maxCommits limit", ToolTests.GitLogToolRespectsMaxCommitsAsync),
+            ("GitBlameTool requires path argument", ToolTests.GitBlameToolRequiresPathAsync),
+            ("GitBlameTool rejects non-existent file", ToolTests.GitBlameToolRejectsNonExistentFileAsync),
+            ("GitBlameTool returns annotated lines with author", ToolTests.GitBlameToolReturnsAnnotatedLinesAsync),
+            ("GitBlameTool reuses cached metadata for repeated commit hash", ToolTests.GitBlameToolReusesCachedMetadataAsync),
+            ("GitDiffTool rejects non-git workspace", ToolTests.GitDiffToolRejectsNonGitWorkspaceAsync),
+            ("GitDiffTool returns correct file count skipping diffstat preamble", ToolTests.GitDiffToolSkipsDiffstatPreambleAsync),
+            ("GitDiffTool counts additions and deletions correctly", ToolTests.GitDiffToolCountsAdditionsAndDeletionsAsync),
+            // v1.1: Streaming progress events
+            ("AgentOrchestrator fires step and answer progress events", ToolTests.AgentOrchestratorFiresStepAndAnswerProgressEventsAsync),
+            ("AgentOrchestrator fires tool result progress event on tool call", ToolTests.AgentOrchestratorFiresToolResultProgressEventAsync),
+            // v1.1: ToolOutputAdapter git evidence
+            ("ToolOutputAdapter returns GitHistory evidence for git_log output", ToolTests.ToolOutputAdapterReturnsGitHistoryEvidenceForGitLogAsync),
+            ("ToolOutputAdapter returns GitHistory evidence for git_diff output", ToolTests.ToolOutputAdapterReturnsGitHistoryEvidenceForGitDiffAsync),
+            ("ToolOutputAdapter returns GitHistory evidence for git_blame output", ToolTests.ToolOutputAdapterReturnsGitHistoryEvidenceForGitBlameAsync),
         };
 
         var failures = new List<string>();
@@ -3663,6 +3682,487 @@ internal static class ToolTests
 
         return JsonSerializer.Deserialize<T>(json, SerializerOptions)
             ?? throw new InvalidOperationException("Failed to deserialize tool output.");
+    }
+
+    // -------------------------------------------------------------------------
+    // v1.1: Git tool tests
+    // -------------------------------------------------------------------------
+
+    public static async Task GitLogToolRejectsNonGitWorkspaceAsync()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.WriteText("readme.txt", "hello");
+
+        var tool = new GitLogTool(workspace.RootPath);
+        var result = await tool.ExecuteAsync(new Dictionary<string, string>());
+
+        TestAssert.False(result.Success, "Tool should fail for a non-git workspace.");
+        TestAssert.Contains("not a git repository", result.ErrorMessage);
+    }
+
+    public static async Task GitLogToolReturnsCommitsAsync()
+    {
+        using var workspace = new GitTestWorkspace();
+        workspace.WriteText("hello.txt", "line one");
+        workspace.Commit("first commit", "hello.txt");
+
+        workspace.WriteText("hello.txt", "line one\nline two");
+        workspace.Commit("second commit", "hello.txt");
+
+        var tool = new GitLogTool(workspace.RootPath);
+        var result = await tool.ExecuteAsync(new Dictionary<string, string>());
+
+        TestAssert.True(result.Success, "Tool should succeed for a git repository.");
+        var response = Deserialize<GitLogResponse>(result.Output);
+
+        TestAssert.True(response.TotalReturned >= 2, "Should return at least 2 commits.");
+        TestAssert.True(response.Commits.Count >= 2, "Commits list should have at least 2 entries.");
+        TestAssert.Equal("second commit", response.Commits[0].Message);
+        TestAssert.Equal("first commit", response.Commits[1].Message);
+        TestAssert.True(response.Commits[0].ShortHash.Length == 7, "Short hash should be 7 characters.");
+        TestAssert.True(response.Commits[0].FilesChanged.Contains("hello.txt"), "FilesChanged should include hello.txt.");
+    }
+
+    public static async Task GitLogToolRespectsMaxCommitsAsync()
+    {
+        using var workspace = new GitTestWorkspace();
+        for (var i = 1; i <= 5; i++)
+        {
+            workspace.WriteText($"file{i}.txt", $"content {i}");
+            workspace.Commit($"commit {i}", $"file{i}.txt");
+        }
+
+        var tool = new GitLogTool(workspace.RootPath);
+        var result = await tool.ExecuteAsync(new Dictionary<string, string>
+        {
+            ["maxCommits"] = "3"
+        });
+
+        TestAssert.True(result.Success, "Tool should succeed.");
+        var response = Deserialize<GitLogResponse>(result.Output);
+
+        TestAssert.Equal(3, response.TotalReturned);
+        TestAssert.Equal(3, response.Commits.Count);
+    }
+
+    public static async Task GitBlameToolRequiresPathAsync()
+    {
+        using var workspace = new GitTestWorkspace();
+
+        var tool = new GitBlameTool(workspace.RootPath);
+        var result = await tool.ExecuteAsync(new Dictionary<string, string>());
+
+        TestAssert.False(result.Success, "Tool should fail when path is missing.");
+        TestAssert.Contains("path argument is required", result.ErrorMessage);
+    }
+
+    public static async Task GitBlameToolRejectsNonExistentFileAsync()
+    {
+        using var workspace = new GitTestWorkspace();
+        workspace.WriteText("real.txt", "hello");
+        workspace.Commit("add real.txt", "real.txt");
+
+        var tool = new GitBlameTool(workspace.RootPath);
+        var result = await tool.ExecuteAsync(new Dictionary<string, string>
+        {
+            ["path"] = "missing.txt"
+        });
+
+        TestAssert.False(result.Success, "Tool should fail when the file does not exist.");
+        TestAssert.Contains("does not exist", result.ErrorMessage);
+    }
+
+    public static async Task GitBlameToolReturnsAnnotatedLinesAsync()
+    {
+        using var workspace = new GitTestWorkspace();
+        workspace.WriteText("src.cs", "line one\nline two\nline three");
+        workspace.Commit("initial", "src.cs");
+
+        var tool = new GitBlameTool(workspace.RootPath);
+        var result = await tool.ExecuteAsync(new Dictionary<string, string>
+        {
+            ["path"] = "src.cs"
+        });
+
+        TestAssert.True(result.Success, "Tool should succeed.");
+        var response = Deserialize<GitBlameResponse>(result.Output);
+
+        TestAssert.Equal(3, response.Lines.Count);
+        TestAssert.Equal(1, response.Lines[0].LineNumber);
+        TestAssert.Equal("line one", response.Lines[0].Content);
+        TestAssert.Equal("Test Author", response.Lines[0].Author);
+        TestAssert.Equal("initial", response.Lines[0].Summary);
+    }
+
+    public static async Task GitBlameToolReusesCachedMetadataAsync()
+    {
+        // All lines in a single commit share the same hash.
+        // git blame --porcelain only emits metadata on the first occurrence —
+        // subsequent lines must reuse the cached author/date/summary.
+        using var workspace = new GitTestWorkspace();
+        workspace.WriteText("multi.txt", "alpha\nbeta\ngamma\ndelta");
+        workspace.Commit("the only commit", "multi.txt");
+
+        var tool = new GitBlameTool(workspace.RootPath);
+        var result = await tool.ExecuteAsync(new Dictionary<string, string>
+        {
+            ["path"] = "multi.txt"
+        });
+
+        TestAssert.True(result.Success, "Tool should succeed.");
+        var response = Deserialize<GitBlameResponse>(result.Output);
+
+        TestAssert.Equal(4, response.Lines.Count);
+        foreach (var line in response.Lines)
+        {
+            TestAssert.True(
+                !string.IsNullOrEmpty(line.Author),
+                $"Line {line.LineNumber} should have a non-empty author (cached metadata reuse).");
+            TestAssert.Equal("Test Author", line.Author);
+            TestAssert.Equal("the only commit", line.Summary);
+        }
+    }
+
+    public static async Task GitDiffToolRejectsNonGitWorkspaceAsync()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.WriteText("file.txt", "content");
+
+        var tool = new GitDiffTool(workspace.RootPath);
+        var result = await tool.ExecuteAsync(new Dictionary<string, string>());
+
+        TestAssert.False(result.Success, "Tool should fail for a non-git workspace.");
+        TestAssert.Contains("not a git repository", result.ErrorMessage);
+    }
+
+    public static async Task GitDiffToolSkipsDiffstatPreambleAsync()
+    {
+        // git diff --stat -p emits a diffstat preamble before the first "diff --git" header.
+        // The parser must skip it — TotalFilesChanged should equal the real file count.
+        using var workspace = new GitTestWorkspace();
+        workspace.WriteText("alpha.txt", "hello");
+        workspace.WriteText("beta.txt", "world");
+        workspace.Commit("initial", "alpha.txt", "beta.txt");
+
+        workspace.WriteText("alpha.txt", "hello changed");
+        workspace.WriteText("beta.txt", "world changed");
+        workspace.Commit("changes", "alpha.txt", "beta.txt");
+
+        var tool = new GitDiffTool(workspace.RootPath);
+        var result = await tool.ExecuteAsync(new Dictionary<string, string>
+        {
+            ["from"] = "HEAD~1",
+            ["to"] = "HEAD"
+        });
+
+        TestAssert.True(result.Success, "Tool should succeed.");
+        var response = Deserialize<GitDiffResponse>(result.Output);
+
+        // The diffstat preamble must NOT be counted as a file.
+        TestAssert.Equal(2, response.TotalFilesChanged);
+        TestAssert.Equal(2, response.Files.Count);
+        TestAssert.True(
+            response.Files.All(f => f.Path is "alpha.txt" or "beta.txt"),
+            "File paths should be alpha.txt and beta.txt — not a preamble fragment.");
+    }
+
+    public static async Task GitDiffToolCountsAdditionsAndDeletionsAsync()
+    {
+        using var workspace = new GitTestWorkspace();
+        workspace.WriteText("code.txt", "keep\nremove me\nkeep too");
+        workspace.Commit("initial", "code.txt");
+
+        workspace.WriteText("code.txt", "keep\nadded line\nkeep too");
+        workspace.Commit("edit", "code.txt");
+
+        var tool = new GitDiffTool(workspace.RootPath);
+        var result = await tool.ExecuteAsync(new Dictionary<string, string>
+        {
+            ["from"] = "HEAD~1",
+            ["to"] = "HEAD"
+        });
+
+        TestAssert.True(result.Success, "Tool should succeed.");
+        var response = Deserialize<GitDiffResponse>(result.Output);
+
+        TestAssert.Equal(1, response.TotalFilesChanged);
+        var file = response.Files[0];
+        TestAssert.Equal("code.txt", file.Path);
+        TestAssert.Equal("modified", file.Status);
+        TestAssert.Equal(1, file.Additions);
+        TestAssert.Equal(1, file.Deletions);
+    }
+
+    // -------------------------------------------------------------------------
+    // v1.1: Streaming progress event tests
+    // -------------------------------------------------------------------------
+
+    public static async Task AgentOrchestratorFiresStepAndAnswerProgressEventsAsync()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.WriteText("README.md", "# Hello");
+
+        var events = new List<AgentProgressEvent>();
+        var progress = new Progress<AgentProgressEvent>(e => events.Add(e));
+
+        var evidenceQualityEvaluator = new RuleBasedEvidenceQualityEvaluator();
+        var orchestrationDependencies = AgentOrchestrationDependencies.CreateDefault(
+            new FileBasedAgentSessionStore(workspace.RootPath),
+            new RuleBasedFileCompressor(),
+            new RuleBasedSessionSummarizer(evidenceQualityEvaluator),
+            evidenceQualityEvaluator,
+            new RuleBasedPromptClarifier());
+
+        var modelClient = new ScriptedModelClient(
+            _ => new ModelResponse("The answer is 42.", ResponseId: "resp-1"));
+
+        var orchestrator = new AgentOrchestrator(
+            _ => Array.Empty<ITool>(),
+            orchestrationDependencies,
+            modelClient,
+            new AgentOrchestratorOptions { MaxIterations = 2 });
+
+        var response = await orchestrator.ProcessAsync(
+            new AgentRequest("What is the answer?", workspace.RootPath),
+            progress);
+
+        TestAssert.True(response.Success, "Orchestrator should succeed.");
+
+        var stepEvents = events.OfType<StepProgressEvent>().ToList();
+        var answerEvents = events.OfType<AnswerProgressEvent>().ToList();
+
+        TestAssert.True(stepEvents.Count >= 1, "At least one StepProgressEvent should be fired.");
+        TestAssert.Equal(1, answerEvents.Count);
+        TestAssert.Equal("The answer is 42.", answerEvents[0].Text);
+    }
+
+    public static async Task AgentOrchestratorFiresToolResultProgressEventAsync()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.WriteText("README.md", "# Hello");
+
+        var events = new List<AgentProgressEvent>();
+        var progress = new Progress<AgentProgressEvent>(e => events.Add(e));
+
+        var evidenceQualityEvaluator = new RuleBasedEvidenceQualityEvaluator();
+        var orchestrationDependencies = AgentOrchestrationDependencies.CreateDefault(
+            new FileBasedAgentSessionStore(workspace.RootPath),
+            new RuleBasedFileCompressor(),
+            new RuleBasedSessionSummarizer(evidenceQualityEvaluator),
+            evidenceQualityEvaluator,
+            new RuleBasedPromptClarifier());
+
+        var callId = "call-readme-1";
+        var modelClient = new ScriptedModelClient(
+            _ => new ModelResponse(
+                FinalAnswer: null,
+                ToolCalls: [new ModelToolCall(callId, "list_files", new Dictionary<string, string> { ["path"] = "." })],
+                ResponseId: "resp-tools"),
+            _ => new ModelResponse("Done.", ResponseId: "resp-final"));
+
+        var orchestrator = new AgentOrchestrator(
+            root => [new ListFilesTool(root)],
+            orchestrationDependencies,
+            modelClient,
+            new AgentOrchestratorOptions { MaxIterations = 3 });
+
+        var response = await orchestrator.ProcessAsync(
+            new AgentRequest("List the files.", workspace.RootPath),
+            progress);
+
+        TestAssert.True(response.Success, "Orchestrator should succeed.");
+
+        var toolResultEvents = events.OfType<ToolResultProgressEvent>().ToList();
+        TestAssert.Equal(1, toolResultEvents.Count);
+        TestAssert.Equal("list_files", toolResultEvents[0].ToolName);
+        TestAssert.True(toolResultEvents[0].Success, "Tool result should be successful.");
+    }
+
+    // -------------------------------------------------------------------------
+    // v1.1: ToolOutputAdapter git evidence tests
+    // -------------------------------------------------------------------------
+
+    public static Task ToolOutputAdapterReturnsGitHistoryEvidenceForGitLogAsync()
+    {
+        var adapter = new DefaultToolOutputAdapter();
+
+        var gitLogJson = JsonSerializer.Serialize(new
+        {
+            FilterPath = (string?)null,
+            TotalReturned = 1,
+            Commits = new[]
+            {
+                new
+                {
+                    Hash = "abc1234def5678901234567890123456789012ab",
+                    ShortHash = "abc1234",
+                    Author = "Alice",
+                    Email = "alice@example.com",
+                    Date = "2026-05-01T12:00:00+00:00",
+                    Message = "add feature",
+                    FilesChanged = new[] { "src/Feature.cs" }
+                }
+            }
+        });
+
+        var toolCall = new ModelToolCall("call-1", "git_log", new Dictionary<string, string>());
+        var executionResult = new ToolExecutionResult("git_log", true, gitLogJson);
+
+        var adapterResult = adapter.BuildToolConversationOutput(toolCall, executionResult, "who added the feature?", null);
+
+        TestAssert.Equal(1, adapterResult.EvidenceItems.Count);
+        var item = adapterResult.EvidenceItems.Single();
+        TestAssert.Equal(EvidenceKind.GitHistory, item.Kind);
+        TestAssert.Equal("git_log", item.ToolName);
+        TestAssert.Contains("abc1234", item.Content);
+        TestAssert.Contains("add feature", item.Content);
+
+        return Task.CompletedTask;
+    }
+
+    public static Task ToolOutputAdapterReturnsGitHistoryEvidenceForGitDiffAsync()
+    {
+        var adapter = new DefaultToolOutputAdapter();
+
+        var gitDiffJson = JsonSerializer.Serialize(new
+        {
+            From = "HEAD~1",
+            To = "HEAD",
+            TotalFilesChanged = 1,
+            Files = new[]
+            {
+                new
+                {
+                    Path = "src/Program.cs",
+                    Status = "modified",
+                    Additions = 10,
+                    Deletions = 3,
+                    Hunks = Array.Empty<object>()
+                }
+            }
+        });
+
+        var toolCall = new ModelToolCall("call-2", "git_diff", new Dictionary<string, string>());
+        var executionResult = new ToolExecutionResult("git_diff", true, gitDiffJson);
+
+        var adapterResult = adapter.BuildToolConversationOutput(toolCall, executionResult, "what changed?", null);
+
+        TestAssert.Equal(1, adapterResult.EvidenceItems.Count);
+        var item = adapterResult.EvidenceItems.Single();
+        TestAssert.Equal(EvidenceKind.GitHistory, item.Kind);
+        TestAssert.Equal("git_diff", item.ToolName);
+        TestAssert.Contains("src/Program.cs", item.Content);
+        TestAssert.Contains("+10/-3", item.Content);
+
+        return Task.CompletedTask;
+    }
+
+    public static Task ToolOutputAdapterReturnsGitHistoryEvidenceForGitBlameAsync()
+    {
+        var adapter = new DefaultToolOutputAdapter();
+
+        var gitBlameJson = JsonSerializer.Serialize(new
+        {
+            Path = "src/Handler.cs",
+            Lines = new[]
+            {
+                new
+                {
+                    LineNumber = 1,
+                    Content = "public void Handle() {}",
+                    CommitHash = "deadbeef00000000000000000000000000000001",
+                    Author = "Bob",
+                    Date = "2026-04-01T09:00:00+00:00",
+                    Summary = "add handler"
+                }
+            }
+        });
+
+        var toolCall = new ModelToolCall("call-3", "git_blame", new Dictionary<string, string>());
+        var executionResult = new ToolExecutionResult("git_blame", true, gitBlameJson);
+
+        var adapterResult = adapter.BuildToolConversationOutput(toolCall, executionResult, "who wrote this?", null);
+
+        TestAssert.Equal(1, adapterResult.EvidenceItems.Count);
+        var item = adapterResult.EvidenceItems.Single();
+        TestAssert.Equal(EvidenceKind.GitHistory, item.Kind);
+        TestAssert.Equal("git_blame", item.ToolName);
+        TestAssert.Contains("src/Handler.cs", item.Content);
+        TestAssert.Contains("Bob", item.Content);
+
+        return Task.CompletedTask;
+    }
+}
+
+internal sealed class GitTestWorkspace : IDisposable
+{
+    private readonly TestWorkspace _inner;
+
+    public GitTestWorkspace()
+    {
+        _inner = new TestWorkspace();
+        RunGit("init");
+        RunGit("config", "user.email", "test@example.com");
+        RunGit("config", "user.name", "Test Author");
+        // Ensure a consistent default branch name across git versions
+        RunGit("checkout", "-b", "main");
+    }
+
+    public string RootPath => _inner.RootPath;
+
+    public void WriteText(string relativePath, string contents)
+        => _inner.WriteText(relativePath, contents);
+
+    public void Commit(string message, params string[] filesToStage)
+    {
+        foreach (var file in filesToStage)
+        {
+            RunGit("add", file);
+        }
+
+        RunGit("commit", "-m", message);
+    }
+
+    public void Dispose()
+    {
+        // Git on Windows marks object files as read-only.
+        // Strip the attribute before delegating to TestWorkspace.Dispose so
+        // Directory.Delete(path, true) doesn't throw UnauthorizedAccessException.
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(RootPath, "*", SearchOption.AllDirectories))
+            {
+                File.SetAttributes(file, FileAttributes.Normal);
+            }
+        }
+        catch
+        {
+            // best-effort — let Dispose proceed regardless
+        }
+
+        _inner.Dispose();
+    }
+
+    private void RunGit(params string[] args)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = "git",
+            WorkingDirectory = RootPath,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+
+        foreach (var arg in args)
+        {
+            psi.ArgumentList.Add(arg);
+        }
+
+        using var proc = Process.Start(psi)
+            ?? throw new InvalidOperationException("Failed to start git process.");
+        proc.WaitForExit();
     }
 }
 
