@@ -5,5 +5,6 @@ public enum EvidenceKind
     SearchHit,
     DirectSnippet,
     FileSummary,
-    ToolObservation
+    ToolObservation,
+    GitHistory
 }

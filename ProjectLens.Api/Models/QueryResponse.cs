@@ -5,4 +5,6 @@ public sealed record QueryResponse(
     string? Output,
     string? ErrorMessage,
     IReadOnlyCollection<ExecutionStepDto> ExecutionSteps,
-    IReadOnlyCollection<ToolResultDto> ToolResults);
+    IReadOnlyCollection<ToolResultDto> ToolResults,
+    IReadOnlyCollection<EvidenceItemDto>? EvidenceItems = null,
+    EvidenceAssessmentDto? FinalAssessment = null);
