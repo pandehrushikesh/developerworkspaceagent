@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading.Channels;
 using ProjectLens.Api.Models;
 using ProjectLens.Application;
 using ProjectLens.Application.Abstractions;
@@ -191,24 +192,43 @@ app.MapPost("/api/query/stream", async (
         await httpContext.Response.Body.FlushAsync(ct);
     }
 
+    var channel = Channel.CreateUnbounded<AgentProgressEvent>(
+        new UnboundedChannelOptions { SingleReader = true });
+
     var progress = new Progress<AgentProgressEvent>(evt =>
+        channel.Writer.TryWrite(evt));
+
+    var agentTask = Task.Run(async () =>
     {
-        _ = evt switch
+        try
         {
-            StepProgressEvent step =>
-                WriteSseAsync(new { type = "step", description = step.Description, success = step.Success }),
-            ToolResultProgressEvent tool =>
-                WriteSseAsync(new { type = "tool_result", toolName = tool.ToolName, success = tool.Success, errorMessage = tool.ErrorMessage }),
-            AnswerProgressEvent answer =>
-                WriteSseAsync(new { type = "answer", text = answer.Text }),
-            _ => Task.CompletedTask
-        };
-    });
+            var agentRequest = new AgentRequest(request.Prompt, normalizedPath);
+            return await orchestrator.ProcessAsync(agentRequest, progress, ct);
+        }
+        finally
+        {
+            channel.Writer.Complete();
+        }
+    }, ct);
 
     try
     {
-        var agentRequest = new AgentRequest(request.Prompt, normalizedPath);
-        var agentResponse = await orchestrator.ProcessAsync(agentRequest, progress, ct);
+        await foreach (var evt in channel.Reader.ReadAllAsync(ct))
+        {
+            object payload = evt switch
+            {
+                StepProgressEvent step =>
+                    new { type = "step", description = step.Description, success = step.Success },
+                ToolResultProgressEvent tool =>
+                    new { type = "tool_result", toolName = tool.ToolName, success = tool.Success, errorMessage = tool.ErrorMessage },
+                AnswerProgressEvent answer =>
+                    (object)new { type = "answer", text = answer.Text },
+                _ => new { type = "unknown" }
+            };
+            await WriteSseAsync(payload);
+        }
+
+        var agentResponse = await agentTask;
 
         var evidenceItems = agentResponse.EvidenceItems?
             .Select(e => new EvidenceItemDto(e.ToolName, e.SourceId, e.Content, e.Kind, e.IsPartial, e.Confidence))

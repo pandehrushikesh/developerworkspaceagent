@@ -119,9 +119,11 @@ public sealed class GitDiffTool : ITool
                 continue;
             }
 
-            // First line: "a/<path> b/<path>"
+            // First line of a real block is always: "a/<path> b/<path>"
+            // The diffstat preamble (emitted before the first "diff --git" header
+            // when --stat is used) does not match this pattern, so skip it.
             var headerParts = lines[0].Split(' ');
-            if (headerParts.Length < 2)
+            if (headerParts.Length < 2 || !headerParts[0].StartsWith("a/"))
             {
                 continue;
             }

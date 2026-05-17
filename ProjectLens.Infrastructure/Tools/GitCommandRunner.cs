@@ -93,7 +93,12 @@ internal sealed class GitCommandRunner
                 ? new GitCommandResult(true, stdout, null)
                 : new GitCommandResult(false, stdout, stderr.Trim());
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException)
+        {
+            try { process.Kill(entireProcessTree: true); } catch { }
+            throw;
+        }
+        catch (Exception ex)
         {
             return new GitCommandResult(false, string.Empty, $"Failed to run git: {ex.Message}");
         }

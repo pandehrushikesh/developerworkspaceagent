@@ -150,7 +150,9 @@ public sealed class GitBlameTool : ITool
                 string date = string.Empty;
                 string summary = string.Empty;
 
-                // Read commit metadata lines
+                // Read commit metadata lines.
+                // git blame --porcelain only emits metadata for the first occurrence
+                // of each hash; subsequent lines for the same commit have no metadata.
                 i++;
                 while (i < rawLines.Length && !rawLines[i].StartsWith('\t'))
                 {
@@ -174,7 +176,15 @@ public sealed class GitBlameTool : ITool
                     i++;
                 }
 
-                commitInfo[hash] = (author, date, summary);
+                // If no metadata was emitted (repeated hash), reuse the cached data.
+                if (string.IsNullOrEmpty(author) && commitInfo.TryGetValue(hash, out var cached))
+                {
+                    (author, date, summary) = cached;
+                }
+                else
+                {
+                    commitInfo[hash] = (author, date, summary);
+                }
 
                 // Tab-prefixed line is the actual code content
                 if (i < rawLines.Length && rawLines[i].StartsWith('\t'))
