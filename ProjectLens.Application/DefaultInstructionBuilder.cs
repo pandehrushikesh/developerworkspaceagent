@@ -78,6 +78,14 @@ public sealed class DefaultInstructionBuilder : IInstructionBuilder
                     builder.AppendLine($"- {historyEntry}");
                 }
             }
+
+            if (!string.IsNullOrWhiteSpace(sessionState.LastAgentResponse))
+            {
+                builder.AppendLine();
+                builder.AppendLine("Your most recent response to the user was:");
+                builder.AppendLine(sessionState.LastAgentResponse);
+                builder.AppendLine("If the user's current message is a short affirmation (e.g. 'yes', 'sure', 'go ahead', 'please'), treat it as confirmation to proceed with what you offered above.");
+            }
         }
 
         return builder.ToString();

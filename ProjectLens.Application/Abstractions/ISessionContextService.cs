@@ -14,4 +14,14 @@ public interface ISessionContextService
         string toolOutputForModel,
         string? rawToolOutput,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Persists the agent's final answer so it can be injected as context in
+    /// the next turn, allowing the model to interpret follow-up replies like
+    /// "yes" or "go ahead" correctly.
+    /// </summary>
+    Task<AgentSessionState?> PersistFinalAnswerAsync(
+        AgentSessionState? sessionState,
+        string finalAnswer,
+        CancellationToken cancellationToken = default);
 }
