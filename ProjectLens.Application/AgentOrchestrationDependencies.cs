@@ -42,13 +42,14 @@ public sealed record AgentOrchestrationDependencies
         IFileCompressor? fileCompressor = null,
         ISessionSummarizer? sessionSummarizer = null,
         IEvidenceQualityEvaluator? evidenceQualityEvaluator = null,
-        IPromptClarifier? promptClarifier = null)
+        IPromptClarifier? promptClarifier = null,
+        string? baseInstructions = null)
     {
         var recoveryPolicy = new DefaultRecoveryPolicy(evidenceQualityEvaluator);
 
         return new AgentOrchestrationDependencies(
             promptClarifier ?? new RuleBasedPromptClarifier(),
-            new DefaultInstructionBuilder(),
+            new DefaultInstructionBuilder(baseInstructions ?? DefaultInstructionBuilder.FallbackInstructions),
             new DefaultSessionContextService(sessionStore, sessionSummarizer, evidenceQualityEvaluator),
             recoveryPolicy,
             new DefaultToolOutputAdapter(fileCompressor, evidenceQualityEvaluator, recoveryPolicy),
