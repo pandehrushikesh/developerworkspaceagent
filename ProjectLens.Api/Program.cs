@@ -15,7 +15,11 @@ var builder = WebApplication.CreateBuilder(args);
 
 var settings = builder.Configuration.Get<ProjectLensSettings>() ?? new ProjectLensSettings();
 
-var systemPromptPath = builder.Configuration["Agent:SystemPromptPath"];
+var rawPromptPath = builder.Configuration["Agent:SystemPromptPath"];
+var systemPromptPath = !string.IsNullOrWhiteSpace(rawPromptPath) && !Path.IsPathRooted(rawPromptPath)
+    ? Path.Combine(AppContext.BaseDirectory, rawPromptPath)
+    : rawPromptPath;
+
 string baseInstructions;
 try
 {
