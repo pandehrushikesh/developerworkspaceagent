@@ -15,6 +15,32 @@ var builder = WebApplication.CreateBuilder(args);
 
 var settings = builder.Configuration.Get<ProjectLensSettings>() ?? new ProjectLensSettings();
 
+var rawPromptPath = builder.Configuration["Agent:SystemPromptPath"];
+var systemPromptPath = !string.IsNullOrWhiteSpace(rawPromptPath) && !Path.IsPathRooted(rawPromptPath)
+    ? Path.Combine(AppContext.BaseDirectory, rawPromptPath)
+    : rawPromptPath;
+
+string baseInstructions;
+try
+{
+    if (string.IsNullOrWhiteSpace(systemPromptPath) || !File.Exists(systemPromptPath))
+        throw new FileNotFoundException($"System prompt file not found: '{systemPromptPath}'");
+
+    var content = await File.ReadAllTextAsync(systemPromptPath);
+    if (string.IsNullOrWhiteSpace(content))
+        throw new InvalidDataException($"System prompt file is empty: '{systemPromptPath}'");
+
+    baseInstructions = content;
+}
+catch (Exception ex)
+{
+    var startupLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Startup");
+    startupLogger.LogWarning(
+        "Could not load system prompt from '{Path}': {Message}. Using built-in fallback instructions.",
+        systemPromptPath, ex.Message);
+    baseInstructions = DefaultInstructionBuilder.FallbackInstructions;
+}
+
 builder.Services.AddSingleton(settings);
 
 builder.Services.AddCors(options =>
@@ -53,7 +79,8 @@ builder.Services.AddSingleton<IAgentOrchestrator>(sp =>
         fileCompressor,
         sessionSummarizer,
         evidenceQualityEvaluator,
-        promptClarifier);
+        promptClarifier,
+        baseInstructions);
 
     return new AgentOrchestrator(
         workspacePath => new ITool[]
